@@ -40,8 +40,10 @@ FILES = standard.vs \
 	caustics.fs \
 	wpc_camuflage.auv \
 	camuflage.fs \
+	wpc_normal.auv \
+	normal.fs \
+	normal.vs \
 	README-shaders.txt
-
 
 TARGETFILES = $(FILES:%=$(DIR)/%)
 
