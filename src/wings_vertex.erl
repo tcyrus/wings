@@ -245,9 +245,9 @@ connect_cut(VS0, VE0, #we{}=We0) when is_integer(VS0),is_integer(VE0) ->
     CutPlane = calc_planes(VS0,VE0,We0),
     ETree = collect_edges(CutPlane, ordsets:from_list([VS0, VE0]), We0),
 
-    CutEs = case select_cut_edges(VS0, VE0, ETree, We0) of
-		fail ->
-		    wings_u:error_msg(?__(1, "Could not connect vertices."));
+    io:format("CONNECT ~p ~p~n",[VS0,VE0]),
+
+    CutEs = try select_cut_edges(VS0, VE0, ETree, We0) of
 		CEs when is_list(CEs) -> CEs;
 		{Path1,Path2} ->
 		    case path_length(Path1, ETree, We0, 0.0) <
@@ -255,11 +255,17 @@ connect_cut(VS0, VE0, #we{}=We0) when is_integer(VS0),is_integer(VE0) ->
 			true -> Path1;
 			false -> Path2
 		    end
+	    catch _:Reason ->
+		    io:format("~p: ~p~n", [Reason, erlang:get_stacktrace()]),
+		    wings_u:error_msg(?__(1, "Could not connect vertices."))
 	    end,
     Cut = fun({Ei,Face}, {WeAcc,AccVs}) ->
 		  case gb_trees:get(Ei,ETree) of
 		      {reuse_vertex,V} ->
-			  {WeAcc, [V,Face|AccVs]};
+			  case AccVs of
+			      [V|_] -> {WeAcc,AccVs};
+			      _ -> {WeAcc, [V,Face|AccVs]}
+			  end;
 		      Pos ->
 			  {We1,Idx} = wings_edge:fast_cut(Ei, Pos, WeAcc),
 			  {We1, [Idx,Face|AccVs]}
@@ -267,7 +273,9 @@ connect_cut(VS0, VE0, #we{}=We0) when is_integer(VS0),is_integer(VE0) ->
 	     (FaceOrVertex, {WeAcc, AccVs}) ->
 		  {WeAcc, [FaceOrVertex|AccVs]}
 	  end,
+    io:format("~p~n",[CutEs]),
     {We2,Vs1} = lists:foldl(Cut, {We0, []}, CutEs),
+    io:format("~p~n",[Vs1]),
     connect_vs(Vs1, We2, []).
 
 connect_vs([Va, Face|[Vb|_]=Vs], #we{next_id=Edge}=We0, Acc) ->
@@ -306,73 +314,53 @@ select_cut_edges(VS0, VE0, Es, We) ->
 			    [S1] -> [S1,Face|Acc]
 			end
 		end, [], FS0, We),
-    io:format("VS ~p ~p ~p~n",[VS0, VE0, lists:reverse(Start00)]),
-    case lists:reverse(Start00) of
-	[{stop,Face}] ->
-	    [VE0, Face, VS0];
-	[F1, S1] ->
-	    case select_cut_edges(S1, VE0, Es, We, [F1, VS0]) of
-		fail -> fail;
-		R1   -> [VE0|R1]
-	    end;
-	[F1, S1, F2, S2] ->
-	    R1 = select_cut_edges(S1, VE0, Es, We, [F1, VS0]),
-	    R2 = select_cut_edges(S2, VE0, Es, We, [F2, VS0]),
-	    case {R1, R2} of
-		{fail, fail} -> fail;
-		{fail, R2} -> [VE0|R2];
-		{R1, fail} -> [VE0|R1];
-		_ -> {[VE0|R2], [VE0|R1]}
-	    end
+    io:format("VS ~p ~p ~p~n",[VS0, VE0, Start00]),
+    select_cut_edges_1(filter_edges(Start00, []), VS0, VE0, Es, We).
+
+filter_edges([_,Face|[_,Face|_]=Start], Acc) ->
+    filter_edges(Start, Acc);
+filter_edges([EI,Face|Start], Acc) ->
+    filter_edges(Start, [Face,EI|Acc]);
+filter_edges([{stop,Face}|_], _) -> [{stop,Face}];
+filter_edges([], Acc) -> Acc.
+
+select_cut_edges_1([{stop,Face}], VS0, VE0, _Es, _We) ->
+    [VE0, Face, VS0];
+select_cut_edges_1([F1, S1], VS0, VE0, Es, We) when is_integer(F1) ->
+    case select_cut_edges_2(S1, VE0, Es, We, [F1, VS0]) of
+	fail -> throw(fail);
+	R1   -> [VE0|R1]
+    end;
+select_cut_edges_1([F1, S1, F2, S2], VS0, VE0, Es, We) ->
+    R1 = select_cut_edges_2(S1, VE0, Es, We, [F1, VS0]),
+    R2 = select_cut_edges_2(S2, VE0, Es, We, [F2, VS0]),
+    case {R1, R2} of
+	{fail, fail} -> throw(fail);
+	{fail, R2} -> [VE0|R2];
+	{R1, fail} -> [VE0|R1];
+	_ -> {[VE0|R2], [VE0|R1]}
     end.
 
-select_cut_edges({stop,_Face}, _, _, _, CEs) ->
+select_cut_edges_2({stop,_Face}, _, _, _, CEs) ->
     CEs;
-select_cut_edges({Edge, Face}=New, Stop, Es0, We, CEs) ->
+select_cut_edges_2({Edge, Face}=New, Stop, Es0, We, CEs) ->
     Es = gb_trees:delete(Edge, Es0),
     Next = wings_face:fold(fun(V, _EdgeId, _E, _Acc) when V =:= Stop ->
 				   [{stop,Face}];
 			      (_V, EdgeId, E, Acc) ->
 				   collect_cut_edge(Face, Es, EdgeId, E, Acc)
 			   end, [fail], Face, We),
-    select_cut_edges(hd(Next), Stop, Es, We, [New|CEs]);
-select_cut_edges(fail, _, _, _, _) -> fail.
+    select_cut_edges_2(hd(Next), Stop, Es, We, [New|CEs]);
+select_cut_edges_2(fail, _, _, _, _) -> fail.
 
 collect_cut_edge(_Face, _Es, _Edge, _E, [stop]=R) -> R;
 collect_cut_edge(Face, Es, Edge, E, Acc) ->
     case gb_trees:lookup(Edge, Es) of
 	none -> Acc;
-	{reuse_vertex, V} ->
-	    case Acc of
-		[V|_] -> Acc;
-		_ -> [V|Acc]
-	    end;
 	_Dist ->
 	    Next = wings_face:other(Face, E),
 	    [{Edge, Next}|Acc]
     end.
-
-calc_planes(VS0, VE0, We) ->
-    P1  = wings_vertex:pos(VS0,We),
-    P2  = wings_vertex:pos(VE0,We),
-    Vec = e3d_vec:norm(e3d_vec:sub(P2, P1)),
-    Mid = e3d_vec:average(P1, P2),
-    N1 = wings_vertex:normal(VS0,We),
-    N2 = wings_vertex:normal(VE0, We),
-    AverN = e3d_vec:average(N1, N2),
-    Wanted = [N || N <- [AverN, N1, N2],
-		   e3d_vec:len(N) > 0.0001,
-		   abs(e3d_vec:dot(Vec, N)) < 0.9999],
-    Normal = case Wanted of
-		 [N|_] -> N;
-		 [] ->
-		     {X,Y,Z} = Vec,
-		     if abs(X) < abs(Z), abs(Y) < abs(Z) -> {1.0, 0.0, 0.0};
-			abs(Z) < abs(X), abs(Y) < abs(X) -> {0.0, 0.0, 1.0};
-			true -> {1.0, 0.0, 0.0}
-		     end
-	     end,
-    e3d_vec:plane(Mid, e3d_vec:cross(Vec,Normal)).
 
 %% Collect all edges on the cut plane and calc edge cut distance
 collect_edges(Plane, Ignore, #we{es=Etab}=We) ->
@@ -401,6 +389,7 @@ collect_edges(Plane, Ignore, #we{es=Etab}=We) ->
 			Dir = e3d_vec:norm(e3d_vec:sub(Pt2,Pt1)),
 			Percent = D1/(D1+D2),
 			PtX = e3d_vec:add(Pt1, e3d_vec:mul(Dir, Percent*wings_edge:length(Ei,We))),
+			io:format("~p: Add ~p ~n",[?LINE, Ei]),
 			gb_trees:enter(Ei,PtX,Acc);
 		    true ->
 			Acc
@@ -412,7 +401,30 @@ reuse_vertex(false, _, _Ei, Acc) ->
     io:format("~p: Ignore ~p ~n",[?LINE, _Ei]),
     Acc;
 reuse_vertex(true, VS, Ei, Acc) ->
+    io:format("~p: Add ~p vertex(~p) ~n",[?LINE, Ei, VS]),
     gb_trees:enter(Ei,{reuse_vertex, VS}, Acc).
+
+calc_planes(VS0, VE0, We) ->
+    P1  = wings_vertex:pos(VS0,We),
+    P2  = wings_vertex:pos(VE0,We),
+    Vec = e3d_vec:norm(e3d_vec:sub(P2, P1)),
+    Mid = e3d_vec:average(P1, P2),
+    N1 = wings_vertex:normal(VS0,We),
+    N2 = wings_vertex:normal(VE0, We),
+    AverN = e3d_vec:average(N1, N2),
+    Wanted = [N || N <- [AverN, N1, N2],
+		   e3d_vec:len(N) > 0.0001,
+		   abs(e3d_vec:dot(Vec, N)) < 0.9999],
+    Normal = case Wanted of
+		 [N|_] -> N;
+		 [] ->
+		     {X,Y,Z} = Vec,
+		     if abs(X) < abs(Z), abs(Y) < abs(Z) -> {1.0, 0.0, 0.0};
+			abs(Z) < abs(X), abs(Y) < abs(X) -> {0.0, 0.0, 1.0};
+			true -> {1.0, 0.0, 0.0}
+		     end
+	     end,
+    e3d_vec:plane(Mid, e3d_vec:cross(Vec,Normal)).
 
 
 %% Create pairs by walking the edge of the face. If we can connect
