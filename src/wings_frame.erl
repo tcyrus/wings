@@ -12,6 +12,7 @@
 -module(wings_frame).
 
 -export([top_menus/0, make_win/2, register_win/3, close/1, set_focus/1,
+	 windows/0, import_layout/2,
 	 get_overlay/0, overlay_draw/3, overlay_hide/1,
 	 get_icon_images/0, get_colors/0]).
 
@@ -78,6 +79,76 @@ make_win(Parent, Title, Opts0) ->
 register_win(Window, Name, Ps) ->
     wx_object:call(?MODULE, {new_window, Window, Name, Ps}).
 
+reset_layout() ->
+    %% Autouv needs to be reset...
+    {ok, {Contained, Free}} = windows(),
+    IsWindow = fun({Split, _, _}) when Split =:= split;
+				       Split =:= split_rev -> false;
+		  (split_complete) -> false;
+		  (_) -> true
+	       end,
+    [wings_wm:delete(Name) || Name <- Contained ++ Free,
+			      Name =/= geom, IsWindow(Name)].
+
+windows() ->
+    wx_object:call(?MODULE, get_windows).
+
+import_layout([geom], St) ->
+    restore_window({geom, undefined, undefined, []}, St),
+    ok;
+import_layout(WinList, St) ->
+    reset_layout(),
+    io:format("~p:~p: Layout Reset~n",[?MODULE,?LINE]),
+    imp_layout(WinList, [], St),
+    ok.
+
+imp_layout([{split, Mode, Pos}|Rest], Stack, St) ->
+    {[R,L],Cont} = imp_layout(Rest, [], St),
+    io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    imp_layout(Cont, [{L,R}|Stack], St);
+imp_layout([{split_rev, Mode, Pos}|Rest], Stack, St) ->
+    {[L,R],Cont} = imp_layout(Rest, [], St),
+    io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    imp_layout(Cont, [{L,R}|Stack], St);
+imp_layout([split_complete|Cont], Stack, _St) ->
+    {Stack, Cont};
+
+imp_layout([L|Rest], Stack, St) ->
+    io:format("Restore : ~p~n", [{L, {50,50}, {500,400}, []}]),
+    restore_window({L, {50,50}, {500,400}, []}, St),
+    imp_layout(Rest, [L|Stack], St);
+imp_layout([], Stack, _St) ->
+    hd(Stack).
+
+restore_window({geom, _Pos, _Size, Ps}, _St) ->
+    wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
+restore_window({Geom, Pos, Size, Ps}, St)
+  when ?IS_GEOM(Geom) ->
+    wings:new_viewer(Geom, Pos, Size, [{tweak_draw,true}|Ps], St);
+restore_window({Name,Pos,Size}, St) -> % OldFormat
+    restore_window({Name,Pos,Size,[]}, St);
+restore_window({Module,{{plugin,_}=Name,{_,_}=Pos,{_,_}=Size,CtmData}}, St) ->
+    wings_plugin:restore_window(Module, Name, Pos, Size, CtmData, St);
+restore_window({{object,_}=Name,{_,_}=Pos,{_,_}=Size,Ps}, St) ->
+    wings_geom_win:window(Name, validate_pos(Pos), Size, Ps, St);
+restore_window({wings_outliner,{_,_}=Pos,{_,_}=Size, Ps}, St) ->
+    wings_outliner:window(validate_pos(Pos), Size, Ps, St);
+restore_window({console,{_,_}=Pos,{_,_}=Size, Ps}, _St) ->
+    wings_console:window(console, validate_pos(Pos), Size, Ps);
+restore_window({{tweak, tweak_palette},{_,_}=Pos, Size, Ps}, St) ->
+    wings_tweak_win:window(tweak_palette, validate_pos(Pos), Size, Ps, St);
+restore_window({{tweak, tweak_magnet},{_,_}=Pos, Size, Ps}, St) ->
+    wings_tweak_win:window(tweak_magnet, validate_pos(Pos), Size, Ps, St);
+restore_window({{tweak, axis_constraint},{_,_}=Pos, Size, Ps}, St) ->
+    wings_tweak_win:window(axis_constraint, validate_pos(Pos), Size, Ps, St);
+restore_window(_, _) -> ok.
+
+validate_pos({X,Y}=Pos) ->
+    case Y < 0 of
+	false -> Pos;
+	true -> {X,20}
+    end.
+
 get_icon_images() ->
     wx_object:call(?MODULE, get_images).
 
@@ -89,7 +160,7 @@ get_colors() ->
      }.
 
 close(Win) ->
-    wx_object:cast(?MODULE, {close, Win}).
+    wx_object:call(?MODULE, {close, Win}).
 
 set_focus(Win) ->
     wx_object:cast(?MODULE, {active, Win}).
@@ -256,6 +327,16 @@ handle_call({new_window, Window, Name, Ps}, _From,
 	    wxWindow:destroy(Dummy),
 	    {reply, ok, State#state{windows=Wins#{ch:=Top#split{w1=Win}}}}
     end;
+
+handle_call({close, Win}, _From, State) ->
+    io:format("~p:~p: Close Win ~p~n", [?MODULE,?LINE,Win]),
+    {reply, ok, close_win(Win, State)};
+
+handle_call(get_windows, _From, #state{windows=#{loose:=Loose, ch:=Top}}=State) ->
+    Contained = export_contained(Top),
+    Free = export_loose(maps:values(Loose)),
+    {reply, {ok, {Contained, Free}}, State};
+
 handle_call(get_images, _From, #state{images=Icons} = State) ->
     {reply, Icons, State};
 
@@ -284,27 +365,6 @@ handle_cast({got_focus, Window, Props}, #state{toolbar=TB0}=State) ->
     ModeRest = proplists:get_value(mode_restriction, Props, none),
     TB = wings_toolbar:update({active, Window, ModeRest}, TB0),
     {noreply, update_active(Window, State#state{toolbar=TB})};
-handle_cast({close, Win}, #state{windows=#{ch:=Child,loose:=Loose,szr:=Szr}=Wins}=State) ->
-    case find_win(Win, Child) of
-	false ->
-	    case lists:keyfind(Win, #win.win, maps:values(Loose)) of
-		#win{frame=Frame} = _Win ->
-		    wxMiniFrame:destroy(Frame),
-		    {noreply, State#state{windows=Wins#{loose:=maps:remove(Frame, Loose)}}};
-		false ->
-		    %% wxWindow:destroy(Win),
-		    {noreply, State}
-	    end;
-	#win{frame=Obj} ->
-	    Close = fun(Where, Other, GrandP) -> close_window(Obj, Where, Other, GrandP) end,
-	    case update_win(Obj, Child, Child, Close) of
-		false -> error({child_no_exists, Obj});
-		{ok, Root}  ->
-		    check_tree(Root, Child),
-		    wxSizer:layout(Szr),
-		    {noreply, State#state{windows=Wins#{ch:=Root}}}
-	    end
-    end;
 handle_cast({init_menus, Frame}, State) ->
     case os:type() of
 	{_, darwin} -> init_menubar(Frame);
@@ -320,16 +380,17 @@ handle_cast(Req, State) ->
 handle_info(check_stopped_move, #state{overlay=Overlay, windows=Wins0} = State) ->
     Wins = attach_floating(stopped_moving(wx_misc:getMouseState()), Overlay, Wins0),
     {noreply, State#state{windows=Wins}};
-handle_info({close_window, Obj}, #state{windows=#{ch:=Root}} = State) ->
-    case find_win(Obj, Root) of
-	false -> ignore;
-	#win{win=Win, name=Name} ->
-	    try wx_object:get_pid(Win) of
-		_Pid  -> close(Win)  %% see handle cast above
-	    catch _:_ ->
-		    wings_wm:psend(Name, close)
-	    end
-    end,
+handle_info({close_window, Obj}, #state{windows=#{ch:=Root}} = State0) ->
+    State = case find_win(Obj, Root) of
+		false -> State0;
+		#win{win=Win, name=Name} ->
+		    try wx_object:get_pid(Win) of
+			_Pid  -> close_win(Win, State0)
+		    catch _:_ -> %% Geom window, let wings_wm handle it first
+			    wings_wm:psend(Name, close),
+			    State0
+		    end
+	    end,
     {noreply, State};
 handle_info(Msg, State) ->
     io:format("~p:~p Got unexpected info ~p~n", [?MODULE,?LINE, Msg]),
@@ -571,18 +632,30 @@ get_split_side({PX,PY}, {AX,AY,W,H}) ->
 	{false, false} -> up
     end.
 
+find_win(Frame, Root) ->
+    case find_win(Frame, Root, []) of
+	false -> false;
+	{Win, _Path} -> Win
+    end.
 
-find_win(Frame, #split{w1=W1,w2=W2}) ->
-    case find_win(Frame, W1) of
-	false -> W2 =/= undefined andalso find_win(Frame, W2);
+find_path(Name, Root) ->
+    case find_win(Name, Root, []) of
+	{_, RevPath} ->
+	    lists:reverse(RevPath);
+	false -> false
+    end.
+
+find_win(Frame, #split{w1=W1,w2=W2}, Acc) ->
+    case find_win(Frame, W1, [left|Acc]) of
+	false -> W2 =/= undefined andalso find_win(Frame, W2, [right|Acc]);
 	Win -> Win
     end;
-find_win(Name, #win{name=Name} = Win)  -> Win;
-find_win(Frame, #win{frame=F, win=W}=Win) ->
+find_win(Name, #win{name=Name} = Win, Path)  -> {Win, Path};
+find_win(Frame, #win{frame=F, win=W}=Win, Path) ->
     IsRef = is_tuple(Frame) andalso element(1, Frame) =:= wx_ref,
     case IsRef andalso (wings_util:wxequal(Frame,F) orelse
 			wings_util:wxequal(Frame,W)) of
-	true -> Win;
+	true -> {Win, Path};
 	false -> false
     end.
 
@@ -602,8 +675,26 @@ update_win(Win, #split{w1=W1, w2=W2}=Parent, _, Fun) ->
     end;
 update_win(_, _, _, _) -> false.
 
+close_win(Win, #state{windows=#{ch:=Tree,loose:=Loose,szr:=Szr}=Wins}=State) ->
+    case find_win(Win, Tree) of
+	false ->
+	    case lists:keyfind(Win, #win.win, maps:values(Loose)) of
+		#win{frame=Frame} = _Win ->
+		    wxMiniFrame:destroy(Frame),
+		    State#state{windows=Wins#{loose:=maps:remove(Frame, Loose)}};
+		false ->
+		    %% wxWindow:destroy(Win),
+		    State
+	    end;
+	#win{frame=Obj} ->
+	    Close = fun(Where, Other, GrandP) -> close_window(Obj, Where, Other, GrandP) end,
+	    {ok, Root} = update_win(Obj, Tree, Tree, Close),
+	    check_tree(Root, Tree),
+	    wxSizer:layout(Szr),
+	    State#state{windows=Wins#{ch:=Root}}
+    end.
+
 close_window(Delete, Split, Other, GrandP) ->
-    % io:format("Close ~p~n",[Delete]),
     case GrandP of
 	Split when is_record(Other, win) -> %% TopLevel
 	    wxWindow:reparent(win(Other), win(GrandP)),
@@ -840,6 +931,36 @@ make_close_button(Parent, Bar, WBSz, H) ->
 		 Self ! {close_window, Parent}
 	 end,
     wxWindow:connect(SBM, left_up, [{callback, CB}]).
+
+export_loose(Windows) ->
+    [Name|| #win{name=Name} <- Windows].
+
+export_contained(#split{mode=undefined, w2=undefined}) ->
+    [geom]; %% Special case
+export_contained(Root) ->
+    Path = find_path(geom, Root),
+    lists:reverse(tree_to_list(Root, Path, [])).
+
+tree_to_list(#split{obj=Obj, mode=Mode,w1=W1,w2=W2}, Path0, Acc0) ->
+    SashPos = wxSplitterWindow:getSashPosition(Obj),
+    {W,H} = wxSplitterWindow:getClientSize(Obj),
+    Pos = case Mode of
+	      splitHorizontally -> 100 * (SashPos div W);
+	      splitVertically -> 100 * (SashPos div H)
+	  end,
+    case Path0 of
+	[right|Path] ->
+	    Acc = tree_to_list(W2, Path, [{split_rev,Mode,Pos}|Acc0]),
+	    [split_complete|tree_to_list(W1, [], Acc)];
+	[left|Path] ->
+	    Acc = tree_to_list(W1, Path, [{split,Mode,Pos}|Acc0]),
+	    [split_complete|tree_to_list(W2, [], Acc)];
+	[] ->
+	    Acc = tree_to_list(W1, [], [{split,Mode,Pos}|Acc0]),
+	    [split_complete|tree_to_list(W2, [], Acc)]
+    end;
+tree_to_list(#win{name=Name}, _, Acc) ->
+    [Name|Acc].
 
 check_tree(#split{} = T, Orig) ->
     try

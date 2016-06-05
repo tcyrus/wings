@@ -48,7 +48,7 @@
 
 %% Window property mangagement.
 -export([get_props/1,get_prop/1,get_prop/2,lookup_prop/1,lookup_prop/2,
-	 set_prop/2,set_prop/3,erase_prop/1,erase_prop/2,
+	 set_win_props/2, set_prop/2,set_prop/3,erase_prop/1,erase_prop/2,
 	 is_prop_defined/2,
 	 get_dd/0, get_dd/1, set_dd/2
 	]).
@@ -578,7 +578,16 @@ lookup_prop(Win, Name) ->
 set_prop(Name, Value) ->
     set_prop(this(), Name, Value).
 
+set_prop(Win, fov, Fov) ->
+    View = get_prop(Win, current_view),
+    set_prop_1(Win, current_view, View#view{fov=Fov});
+set_prop(Win, clipping_planes, {Hither, Yon}) ->
+    View = wings_wm:get_prop(Win, current_view),
+    set_prop(Win, current_view, View#view{hither=Hither,yon=Yon});
 set_prop(Win, Name, Value) ->
+    set_prop_1(Win, Name, Value).
+
+set_prop_1(Win, Name, Value) ->
     Props0 = ?GET({Win, props}),
     Props = gb_trees:enter(Name, Value, Props0),
     ?SET({Win, props}, Props).
@@ -1278,13 +1287,32 @@ message_event(_) -> keep.
 
 toplevel(Name, Window, Props, Op) ->
     new(Name, Window, Op),
-    Do = fun({display_data, V}) -> set_dd(Name, V);
-	    ({K, V}) -> wings_wm:set_prop(Name, K, V)
-	 end,
-    [Do(KV) || KV <- Props],
+    set_win_props(Name, Props),
     wings_frame:register_win(Window, Name, [external]),
+    ok.
+
+set_win_props(Name, Props) ->
+    Do = fun({display_data, V}) -> set_dd(Name, V);
+	    ({K, V}) ->
+		 %%is_valid_prop(K) andalso
+		 set_prop(Name, K, V);
+	    (_What) ->
+		 io:format("Ignored (old) property: ~p~n", [_What]),
+		 ignore
+	 end,
+    [Do(KV) || KV <- lists:ukeysort(1,Props)], %% Unique props first key in list overrides
     ok.
 
 toplevel_title(Win, Title) ->
     wings_frame:set_title(Win, Title),
     ok.
+
+%% is_valid_prop(clipping_planes) -> true;
+%% is_valid_prop(fov) -> true;
+%% is_valid_prop(current_view) -> true;
+%% is_valid_prop(show_info_text) -> true;
+%% is_valid_prop(show_groundplane) -> true;
+%% is_valid_prop(show_axes) -> true;
+%% is_valid_prop(_Prop) ->
+%%     io:format("Prop ignored: ~p~n", [_Prop]),
+%%     false.
