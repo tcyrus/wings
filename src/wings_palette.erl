@@ -69,15 +69,15 @@ palette(#st{pal=Pal0}) ->
 %% Inside wings (process)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-create_window(Pos, Size, Ps, St) ->
-    Cols = get_all_colors(St),
-    Frame = wings_frame:make_win(title(), [{size, Size}, {pos, Pos}]),
+create_window(Pos, Size, Ps0, St) ->
+    Cols  = get_all_colors(St),
+    {Frame,Ps} = wings_frame:make_win(title(), [{size, Size}, {pos, Pos}|Ps0]),
     Window = wx_object:start_link(?MODULE, [Frame, Size, Ps, Cols], []),
     F = fun({color,_}) -> yes;
 	   ({material, _}) -> yes;
 	   (_) -> no
 	end,
-    Fs = [{drag_filter, F}, {display_data, geom_display_lists}],
+    Fs = [{drag_filter, F}, {display_data, geom_display_lists}|Ps],
     wings_wm:toplevel(palette, Window, Fs, {push,change_state(Window, St)}),
     keep.
 
@@ -273,7 +273,6 @@ init([Frame, {W,_}, _Ps, Cols0]) ->
 	wxScrolledWindow:setScrollRate(Win, 0, ?BOX_H+?BORD),
 	wxWindow:connect(Win, size, [{skip, true}]),
 	wxFrame:connect(Frame, activate),
-	wxFrame:show(Frame),
 	{Win, #state{self=self(), win=Win, sz=Sz,
 		     cols=Cols, bsz=BSz, empty=Empty}}
     catch _:Reason ->

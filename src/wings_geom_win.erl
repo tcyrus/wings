@@ -47,11 +47,11 @@ window(St) ->
 	    keep
     end.
 
-window({_,Client}=Name, Pos, Size, Ps, St) ->
+window({_,Client}=Name, Pos, Size, Ps0, St) ->
     Shapes = get_shape_state(Name, St),
-    Frame = wings_frame:make_win(title(Client), [{size, Size}, {pos, Pos}]),
+    {Frame,Ps} = wings_frame:make_win(title(Client), [{size, Size}, {pos, Pos}|Ps0]),
     Window = wx_object:start_link(?MODULE, [Frame, Size, Ps, Name, Shapes], []),
-    Fs = [{display_data, geom_display_lists}],
+    Fs = [{display_data, geom_display_lists}|Ps],
     wings_wm:toplevel(Name, Window, Fs, {push,change_state(Window, St)}),
     keep.
 
@@ -422,7 +422,6 @@ init([Frame, {W,_}, _Ps, Name, SS]) ->
     Shown = update_shapes(sort_folder(SS), SS, undefined, LC),
     
     connect_events(TC, LC),
-    wxWindow:show(Frame),
     {Splitter, #state{self=self(), name=Name,
 		      sp=Splitter,
 		      tc=TC, tree=Tree,

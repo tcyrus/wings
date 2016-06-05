@@ -220,10 +220,10 @@ new_viewer(St) ->
 new_viewer(Name, Pos, Size, Props, St) ->
     Op = main_loop_noredraw(St),
     Title = geom_title(Name),
-    Frame = wings_frame:make_win(Title, [{size, Size}, {pos, Pos}]),
+    {Frame,Ps} = wings_frame:make_win(Title, [{size, Size}, {pos, Pos}|Props]),
     Context = wxGLCanvas:getContext(?GET(gl_canvas)),
     Canvas = wings_gl:window(Frame, Context, true),
-    wings_wm:toplevel(Name, Canvas, Props ++ initial_properties(), Op),
+    wings_wm:toplevel(Name, Canvas, Ps ++ initial_properties(), Op),
     set_drag_filter(Name),
     Name.
 

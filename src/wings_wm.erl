@@ -1291,21 +1291,26 @@ message_event(_) -> keep.
 toplevel(Name, Window, Props, Op) ->
     new(Name, Window, Op),
     set_win_props(Name, Props),
-    wings_frame:register_win(Window, Name, [external]),
+    wings_frame:register_win(Window, Name, Props),
     ok.
 
 set_win_props(Name, Props) ->
     Do = fun({display_data, V}) -> set_dd(Name, V);
 	    ({K, V}) ->
-		 %%is_valid_prop(K) andalso
-		 set_prop(Name, K, V);
-	    (_What) ->
-		 io:format("Ignored (old) property: ~p~n", [_What]),
-		 ignore
+		 is_valid_prop(K) andalso
+		     set_prop(Name, K, V)
 	 end,
-    [Do(KV) || KV <- lists:ukeysort(1,Props)], %% Unique props first key in list overrides
+    Props1 = [KV || {_,_} = KV <- Props],
+    [Do(KV) || KV <- lists:ukeysort(1,Props1)], %% Unique props first key in list overrides
     ok.
 
 toplevel_title(Win, Title) ->
     wings_frame:set_title(Win, Title),
     ok.
+
+is_valid_prop(size) ->  false;
+is_valid_prop(pos) -> false;
+is_valid_prop(internal) -> false;
+is_valid_prop(external) -> false;
+is_valid_prop(_) ->  true.
+

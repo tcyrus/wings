@@ -146,9 +146,9 @@ do_window(Name, Opts) ->
 	      undefined -> {-1, -1};
 	      SavedPos -> SavedPos
 	  end,
-    Win = wings_frame:make_win(Title, [{size, Size}, {pos, Pos}]),
+    {Win, Ps} = wings_frame:make_win(Title, [{size, Size}, {pos, Pos}|Opts]),
     {ok, Window} = req({window, wings_io:get_process_option(), Win, Font}),
-    wings_wm:toplevel(Name, Window, [], {push, fun(Ev) -> req({event, Ev}), keep end}).
+    wings_wm:toplevel(Name, Window, Ps, {push, fun(Ev) -> req({event, Ev}), keep end}).
 
 %%% I/O server ----------------------------------------------------------------
 
@@ -372,7 +372,6 @@ wc_open_window(#state{lines=Lines}=State, Win, Font) ->
     wxWindow:setBackgroundColour(Ctrl, wings_color:rgb4bv(wings_pref:get_value(console_color))),
     wxWindow:setForegroundColour(Ctrl, wings_color:rgb4bv(wings_pref:get_value(console_text_color))),
     wxTextCtrl:appendText(Ctrl, [[Line,$\n] || Line <- queue:to_list(Lines)]),
-    wxFrame:show(Win),
     wxWindow:connect(Ctrl, destroy, [{skip, true}]),
     wxFrame:connect(Ctrl, size, [{skip, true}]),
     {State#state{win=Win, ctrl=Ctrl}, {ok, Ctrl}}.

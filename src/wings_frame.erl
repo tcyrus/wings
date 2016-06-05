@@ -57,20 +57,24 @@ top_menus() ->
      {?__(6,"Window"),window,wings:window_menu()}|Tail].
 
 make_win(Title, Opts) ->
-    make_win(?GET(top_frame), Title, Opts).
-make_win(Parent, Title, Opts0) ->
+    case proplists:get_value(internal, Opts, false) of
+	true  -> {?GET(top_frame), [{title, Title}|Opts]};
+	false -> {make_win(?GET(top_frame), Title, Opts), [external|Opts]}
+    end.
+
+make_win(Parent, Title, Ps) ->
     FStyle = {style, ?wxCAPTION bor ?wxCLOSE_BOX bor ?wxRESIZE_BORDER},
-    {Size, Opts1} = case lists:keytake(size, 1, Opts0) of
-			{value, {size, Sz}, Os1} -> {Sz, Os1};
-			false  -> {false, Opts0}
-		    end,
-    Opts = case lists:keytake(pos, 1, Opts1) of
-	       {value, {pos, Pos0}, Os2} ->
+    Size = case lists:keyfind(size, 1, Ps) of
+	       {size, Sz} -> Sz;
+	       false  -> false
+	   end,
+    Opts = case lists:keyfind(pos, 1, Ps) of
+	       {pos, Pos0} ->
 		   TopFrame = ?GET(top_frame),
 		   Pos = wxWindow:clientToScreen(TopFrame, Pos0),
-		   [{pos,Pos}| Os2];
+		   [{pos,Pos}];
 	       false  ->
-		   Opts1
+		   []
 	   end,
     Frame = wxMiniFrame:new(Parent, ?wxID_ANY, Title, [FStyle|Opts]),
     Size =/= false andalso wxWindow:setClientSize(Frame, Size),
@@ -122,8 +126,8 @@ imp_layout([split_complete|Cont], Stack, _St) ->
     {Stack, Cont};
 
 imp_layout([L|Rest], Stack, St) ->
-    io:format("Restore : ~p~n", [{L, {50,50}, {500,400}, []}]),
-    restore_window({L, {50,50}, {500,400}, []}, St),
+    io:format("Restore : ~p~n", [{L, {50,50}, {500,400}, [{internal, true}]}]),
+    restore_window({L, {50,50}, {50,40}, [{internal, true}]}, St),
     imp_layout(Rest, [L|Stack], St);
 imp_layout([], Stack, _St) ->
     hd(Stack).
@@ -317,15 +321,22 @@ handle_event(Ev, State) ->
 handle_call({new_window, Window, Name, Ps}, _From,
 	    #state{windows=Wins=#{loose:=Loose, ch:=Top}}=State) ->
     External = proplists:get_value(external, Ps),
+    Internal = proplists:get_value(internal, Ps),
     Geom = proplists:get_value(top, Ps),
     Win0 = #win{win=Window, name=Name},
+    io:format("Creating ~p ~p~n",[Name, Ps]),
     if External ->
 	    Frame = wx:typeCast(wxWindow:getParent(Window), wxMiniFrame),
 	    Title = wxFrame:getTitle(Frame),
 	    Win = Win0#win{frame=Frame, title=Title, ps=#{close=>true, move=>true}},
 	    wxWindow:connect(Frame, move),
 	    wxWindow:connect(Frame, close_window),
+	    wxFrame:show(Frame),
 	    {reply, ok, State#state{windows=Wins#{loose:=Loose#{Frame => Win}}}};
+       Internal ->
+	    %Title = proplists:get_value(title, Ps),
+
+	    {reply, ok, State};
        Geom -> %% Specialcase for geom window
 	    Title = proplists:get_value(title, Ps),
 	    #split{w1=Dummy} = Top,
@@ -953,8 +964,8 @@ tree_to_list(#split{obj=Obj, mode=Mode,w1=W1,w2=W2}, Path0, Acc0) ->
     SashPos = wxSplitterWindow:getSashPosition(Obj),
     {W,H} = wxSplitterWindow:getClientSize(Obj),
     Pos = case Mode of
-	      splitHorizontally -> 100 * (SashPos div W);
-	      splitVertically -> 100 * (SashPos div H)
+	      splitHorizontally -> round(100 * (SashPos / H));
+	      splitVertically -> round(100 * (SashPos / W))
 	  end,
     case Path0 of
 	[right|Path] ->
