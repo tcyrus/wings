@@ -471,7 +471,7 @@ code_change(_From, _To, State) ->
 
 terminate(_Reason, _) ->
     io:format("terminate: ~p (~p)~n",[?MODULE, _Reason]),
-    wings ! {external, fun(_) -> wings_wm:delete(palette) end},
+    wings ! {wm, {delete, palette}},
     normal.
 
 %%%%%%%%%%%%%%%%%%%%%%

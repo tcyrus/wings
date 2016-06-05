@@ -985,6 +985,36 @@ default_stack(Name) ->
 
 wm_event(dirty) ->
     dirty();
+wm_event({active, _Name}) ->
+    update_focus(none);
+wm_event({timer_active, Name, Prev}) ->
+    erase(wm_timer),
+    case get(wm_focus) of
+	Prev ->
+	    case find_active() of
+		Name -> update_focus(Name);
+		_ -> ignore
+	    end;
+	_ -> ignore
+    end;
+wm_event({delete, Win}) ->
+    delete(Win);
+
+wm_event({send_to,Name,Ev}) ->
+    %%io:format("~p:~p: ~p ~P~n",[?MODULE,?LINE,Name,Ev,10]),
+    case gb_trees:is_defined(Name, get(wm_windows)) of
+	false -> ok;
+	true -> do_dispatch(Name, Ev)
+    end;
+wm_event({send_after_redraw,Name,Ev}) ->
+    case gb_trees:is_defined(Name, get(wm_windows)) of
+	false -> ok;
+	true -> do_dispatch(Name, Ev)
+    end;
+wm_event({send_once, Name, Ev}) ->
+    wings_io:putback_event_once({wm,{send_to,Name,Ev}}),
+    ok;
+
 wm_event({message,Name,Msg}) ->
     case lookup_window_data(Name) of
 	none -> ok;
@@ -1006,33 +1036,6 @@ wm_event({message_right,Name,Right0}) ->
 	    put_window_data(Name, Data),
 	    dirty()
     end;
-wm_event({active, _Name}) ->
-    update_focus(none);
-wm_event({timer_active, Name, Prev}) ->
-    erase(wm_timer),
-    case get(wm_focus) of
-	Prev ->
-	    case find_active() of
-		Name -> update_focus(Name);
-		_ -> ignore
-	    end;
-	_ -> ignore
-    end;
-
-wm_event({send_to,Name,Ev}) ->
-    %%io:format("~p:~p: ~p ~P~n",[?MODULE,?LINE,Name,Ev,10]),
-    case gb_trees:is_defined(Name, get(wm_windows)) of
-	false -> ok;
-	true -> do_dispatch(Name, Ev)
-    end;
-wm_event({send_after_redraw,Name,Ev}) ->
-    case gb_trees:is_defined(Name, get(wm_windows)) of
-	false -> ok;
-	true -> do_dispatch(Name, Ev)
-    end;
-wm_event({send_once, Name, Ev}) ->
-    wings_io:putback_event_once({wm,{send_to,Name,Ev}}),
-    ok;
 wm_event({callback,Cb}) ->
     Cb().
 
@@ -1306,13 +1309,3 @@ set_win_props(Name, Props) ->
 toplevel_title(Win, Title) ->
     wings_frame:set_title(Win, Title),
     ok.
-
-%% is_valid_prop(clipping_planes) -> true;
-%% is_valid_prop(fov) -> true;
-%% is_valid_prop(current_view) -> true;
-%% is_valid_prop(show_info_text) -> true;
-%% is_valid_prop(show_groundplane) -> true;
-%% is_valid_prop(show_axes) -> true;
-%% is_valid_prop(_Prop) ->
-%%     io:format("Prop ignored: ~p~n", [_Prop]),
-%%     false.

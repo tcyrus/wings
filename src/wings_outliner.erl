@@ -411,7 +411,7 @@ code_change(_From, _To, State) ->
     State.
 
 terminate(_Reason, #state{}) ->
-    wings ! {external, fun(_) -> wings_wm:delete(?MODULE) end},
+    wings ! {wm, {delete, ?MODULE}},
     normal.
 
 %%%%%%%%%%%%%%%%%%%%%%

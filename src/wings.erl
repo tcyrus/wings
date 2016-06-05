@@ -16,7 +16,7 @@
 -export([redraw/1,redraw/2,init_opengl/1,command/2]).
 -export([mode_restriction/1,clear_mode_restriction/0,get_mode_restriction/0]).
 -export([ask/3]).
--export([save_windows/0,save_windows_1/1]).
+-export([new_viewer/5, save_windows/0,save_windows_1/1]).
 -export([handle_drop/3, popup_menu/3]).
 -export([highlight_aim_setup/1]).
 -export([register_postdraw_hook/3,unregister_postdraw_hook/2]).

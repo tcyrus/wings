@@ -267,7 +267,7 @@ code_change(_From, _To, State) ->
     State.
 
 terminate(_Reason, _) ->
-    wings ! {external, fun(_) -> wings_wm:delete(?WIN_NAME) end},
+    wings ! {wm, {delete, ?WIN_NAME}},
     normal.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%

@@ -29,8 +29,8 @@
 
 -define(IS_GEOM(Name),
 	((Name =:= geom)
-	 orelse (element(1, Name) =:= geom)
-	 orelse (element(1, Name) =:= autouv))).
+	 orelse (is_tuple(Name) andalso element(1, Name) =:= geom)
+	 orelse (is_tuple(Name) andalso element(1, Name) =:= autouv))).
 
 %% API  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -87,8 +87,16 @@ reset_layout() ->
 		  (split_complete) -> false;
 		  (_) -> true
 	       end,
-    [wings_wm:delete(Name) || Name <- Contained ++ Free,
-			      Name =/= geom, IsWindow(Name)].
+    Delete = fun(Name) ->
+		     wings_wm:delete(Name),
+		     case ?IS_GEOM(Name) of
+			 true  -> ignore;
+			 false -> receive {wm, {delete, Name}} -> ok end
+		     end
+	     end,
+    [Delete(Name) || Name <- Contained ++ Free, Name =/= geom, IsWindow(Name)],
+    io:format("~p:~p: Layout Reset~n",[?MODULE,?LINE]),
+    ok.
 
 windows() ->
     wx_object:call(?MODULE, get_windows).

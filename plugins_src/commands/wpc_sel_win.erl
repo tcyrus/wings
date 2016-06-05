@@ -279,7 +279,7 @@ code_change(_From, _To, State) ->
 
 terminate(_Reason, _) ->
     io:format("terminate: ~p (~p)~n",[?WIN_NAME, _Reason]),
-    wings ! {external, fun(_) -> wings_wm:delete(?WIN_NAME) end},
+    wings ! {wm, {delete, ?WIN_NAME}},
     normal.
 
 %%%%%%%%%%%%%%%%%%%%%%

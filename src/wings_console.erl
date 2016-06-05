@@ -342,7 +342,7 @@ wings_console_request(State, get_state) ->
     {State,State};
 wings_console_request(State, {event, Ev}) ->
     case Ev of
-	close -> wings ! {external, fun(_) -> wings_wm:delete(?WIN_NAME) end};
+	close -> wings ! {wm, {delete, ?WIN_NAME}};
 	_ -> %% io:format("~p: Got ~p~n",[?MODULE, Ev]),
 	    ignore
     end,
