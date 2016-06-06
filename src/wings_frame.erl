@@ -58,8 +58,8 @@ top_menus() ->
 
 make_win(Title, Opts) ->
     case proplists:get_value(internal, Opts, false) of
-	true  -> {?GET(top_frame), [{title, Title}|Opts]};
-	false -> {make_win(?GET(top_frame), Title, Opts), [external|Opts]}
+	false -> {make_win(?GET(top_frame), Title, Opts), [external|Opts]};
+	_WinProps  -> {?GET(top_frame), [{title, Title}|Opts]}
     end.
 
 make_win(Parent, Title, Ps) ->
@@ -110,31 +110,30 @@ import_layout([geom], St) ->
     ok;
 import_layout(WinList, St) ->
     reset_layout(),
-    _Tree = imp_layout(WinList, [], St),
-    %% wx_object:call({import_layout, Tree}),
-    ok.
+    {Tree, _Rest} = imp_layout(WinList, [], undefined, St),
+    io:format("Tree: ~p~n",[Tree]),
+    Tree.
 
-imp_layout([{split, Mode, Pos}|Rest], Stack, St) ->
-    {[R,L],Cont} = imp_layout(Rest, [], St),
-    io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    io:format("Path first ~p~n",[L]),
-    io:format("Path second ~p~n",[R]),
-    imp_layout(Cont, [{split, Mode, Pos, L,R}|Stack], St);
-imp_layout([{split_rev, Mode, Pos}|Rest], Stack, St) ->
-    {[L,R],Cont} = imp_layout(Rest, [], St),
-    io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    io:format("Path first ~p~n",[L]),
-    io:format("Path second ~p~n",[R]),
-    imp_layout(Cont, [{split, Mode, Pos, L,R}|Stack], St);
-imp_layout([split_complete|Cont], Stack, _St) ->
-    {Stack, Cont};
+imp_layout([{split, Mode, Pos}|Rest], Path, Split0, St) ->
+    {L,Cont0} = imp_layout(Rest, Path, Split0, St),
+    {R, Cont} = imp_layout(Cont0, [second|Path], {Mode,Pos}, St),
+    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    {{split, Mode, Pos, L,R}, Cont};
+imp_layout([{split_rev, Mode, Pos}|Rest], Path, Split0, St) ->
+    {R,Cont0} = imp_layout(Rest, Path, Split0, St),
+    {L, Cont} = imp_layout(Cont0, [first|Path], {Mode, Pos}, St),
+    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    {{split, Mode, Pos, L,R}, Cont};
 
-imp_layout([L|Rest], Stack, St) ->
-    io:format("Restore : ~p~n", [{L, {50,50}, {500,400}, [{internal, true}]}]),
-    %restore_window({L, {50,50}, {50,40}, [{internal, true}]}, St),
-    imp_layout(Rest, [L|Stack], St);
-imp_layout([], Stack, _St) ->
-    hd(Stack).
+imp_layout([geom|Rest], _, _, _St) ->
+    %% wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]),
+    %% restore_window({L, {50,50}, {50,40}, [{internal, geom}]}, St),
+    {geom,Rest};
+imp_layout([L|Rest], [Last|Path], {Mode, Pos}, St) ->
+    Restore = {lists:reverse([split(Mode,Last)|Path]), Pos},
+    io:format("Restore: ~p~n", [{L, {50,50}, {500,400}, [{internal, Restore}]}]),
+    restore_window({L, {50,50}, {50,40}, [{internal, Restore}]}, St),
+    {L, Rest}.
 
 restore_window({geom, _Pos, _Size, Ps}, _St) ->
     wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
@@ -149,6 +148,8 @@ restore_window({{object,_}=Name,Pos,{_,_}=Size,Ps}, St) ->
     wings_geom_win:window(Name, validate_pos(Pos), Size, Ps, St);
 restore_window({wings_outliner,Pos,{_,_}=Size, Ps}, St) ->
     wings_outliner:window(validate_pos(Pos), Size, Ps, St);
+restore_window({palette,Pos,{_,_}=Size, Ps}, St) ->
+    wings_palette:window(validate_pos(Pos), Size, Ps, St);
 restore_window({console,Pos,{_,_}=Size, Ps}, _St) ->
     wings_console:window(console, validate_pos(Pos), Size, Ps);
 restore_window({{tweak, tweak_palette},Pos, Size, Ps}, St) ->
@@ -323,9 +324,9 @@ handle_event(Ev, State) ->
 %%%%%%%%%%%%%%%%%%%%%%
 
 handle_call({new_window, Window, Name, Ps}, _From,
-	    #state{windows=Wins=#{loose:=Loose, ch:=Top}, wip=Wip}=State) ->
+	    #state{windows=Wins=#{loose:=Loose, ch:=Top}}=State) ->
     External = proplists:get_value(external, Ps),
-    Internal = proplists:get_value(internal, Ps),
+    Internal = proplists:get_value(internal, Ps, false),
     Geom = proplists:get_value(top, Ps),
     Win0 = #win{win=Window, name=Name},
     io:format("Creating ~p ~p~n",[Name, Ps]),
@@ -337,10 +338,11 @@ handle_call({new_window, Window, Name, Ps}, _From,
 	    wxWindow:connect(Frame, close_window),
 	    wxFrame:show(Frame),
 	    {reply, ok, State#state{windows=Wins#{loose:=Loose#{Frame => Win}}}};
-       Internal ->
+       Internal =/= false ->
 	    Title = proplists:get_value(title, Ps),
-	    Win = Win0#win{title=Title, ps=#{close=>false, move=>false}},
-	    {reply, ok, State#state{wip=[Win|Wip]}};
+	    Win = Win0#win{title=Title, ps=#{close=>true, move=>true}},
+	    Ws = make_internal_win(Internal, Win, Wins),
+	    {reply, ok, State#state{windows=Ws}};
        Geom -> %% Specialcase for geom window
 	    Title = proplists:get_value(title, Ps),
 	    #split{w1=Dummy} = Top,
@@ -350,10 +352,6 @@ handle_call({new_window, Window, Name, Ps}, _From,
 	    wxWindow:destroy(Dummy),
 	    {reply, ok, State#state{windows=Wins#{ch:=Top#split{w1=Win}}}}
     end;
-
-%% handle_call({imp_layout, Tree}, _, #state{windows=Wins=#{ch:=Top},wip=Wips} = State) ->
-%%     Root = setup_windows(Tree, Top, Wips),
-%%     {reply, ok, State#state{windows=Wins#{ch:=Root}, wip=[]}};
 
 handle_call({close, Win}, _From, State) ->
     io:format("~p:~p: Close Win ~p~n", [?MODULE,?LINE,Win]),
@@ -526,16 +524,15 @@ attach_floating(_B, _, State) ->
     %% Spurious Move events on windows
     State.
 
-attach_window({_,Path}=Split, Frame, NewWin, #{szr:=Szr, ch:=#split{obj=Parent}=Child} = State) ->
+attach_window({_,Path}=Split, Frame, NewWin, #{szr:=Szr, ch:=Child} = State) ->
     Attach = fun() ->
 		     {_,Pos} = preview_rect(Split, NewWin),
-		     Win = make_internal_win(Parent, NewWin),
+		     Win = make_internal_win(win(Child), NewWin),
 		     wxWindow:destroy(Frame),
 		     Root = split_win(Path, Win, Child, Pos),
 		     case win(Root) =:= win(Child) of
-			 false ->
-			     wxSizer:replace(Szr, win(Child), win(Root));
-			 true -> ignore
+			 false -> wxSizer:replace(Szr, win(Child), win(Root));
+			 true  -> ignore
 		     end,
 		     wxSizer:layout(Szr),
 		     check_tree(Root, Child),
@@ -543,8 +540,10 @@ attach_window({_,Path}=Split, Frame, NewWin, #{szr:=Szr, ch:=#split{obj=Parent}=
 	     end,
     wings_io:batch(Attach).
 
-split_win([Dir], NewWin, Node, Pos) ->
+split_win([Dir], NewWin, Node, Pos0) ->
     {Mode, Which} = split(Dir),
+    Pos = pos_from_permille(Pos0, Mode, win(Node)),
+    io:format("~p ~p ~p => ~p~n", [Pos0, Mode, wxWindow:getClientSize(win(Node)), Pos]),
     case Node of
 	#split{mode=undefined, w1=Root} -> %% Top Window
 	    set_splitter(Which, Mode, Pos, Node, Root, NewWin);
@@ -575,15 +574,13 @@ make(Parent) ->
 set_splitter(first, Mode, Pos, Sp, W2, W1) ->
     case Pos of
 	false -> ignore;
-	_ ->
-	    wxSplitterWindow:Mode(win(Sp), win(W1), win(W2), [{sashPosition, Pos}])
+	_ -> wxSplitterWindow:Mode(win(Sp), win(W1), win(W2), [{sashPosition, Pos}])
     end,
     Sp#split{mode=Mode, w1=W1, w2=W2};
 set_splitter(second, Mode, Pos, Sp, W1, W2) ->
     case Pos of
 	false -> ignore;
-	_ ->
-	    wxSplitterWindow:Mode(win(Sp), win(W1), win(W2), [{sashPosition, Pos}])
+	_ -> wxSplitterWindow:Mode(win(Sp), win(W1), win(W2), [{sashPosition, Pos}])
     end,
     Sp#split{mode=Mode, w1=W1, w2=W2}.
 
@@ -880,6 +877,14 @@ win(#split{obj=Obj}) -> Obj;
 win(#win{frame=Obj}) -> Obj;
 win(Obj) -> Obj.
 
+pos_from_permille({permille, Permille}, Mode, Obj) ->
+    {W,H} = wxWindow:getClientSize(Obj),
+    case Mode of
+	splitVertically   -> round(W * Permille / 1000)-(W-25);
+	splitHorizontally -> round(H * Permille / 1000)-(H-25)
+    end;
+pos_from_permille(Pos, _, _) -> Pos.
+
 delete_timer(#{op:= #{mtimer:=Ref}}=St)
   when Ref =/= undefined ->
     timer:cancel(Ref),
@@ -892,6 +897,19 @@ setup_timer(Frame, Path, St) ->
 setup_timer(#{op:=Op} = St) ->
     {ok, TRef} = timer:send_after(200, check_stopped_move),
     St#{op:=Op#{mtimer=>TRef}}.
+
+make_internal_win({Path, Pos}, NewWin, #{szr:=Szr, ch:=Child} = State) ->
+    io:format("Attach: ~p ~p ~p~n", [Pos, Path, NewWin]),
+    Win  = make_internal_win(win(Child), NewWin),
+    Root = split_win(Path, Win, Child, {permille, Pos}),
+    case win(Root) =:= win(Child) of
+	false -> wxSizer:replace(Szr, win(Child), win(Root));
+	true  -> ignore
+    end,
+    wxSizer:layout(Szr),
+    wxWindow:refresh(win(Root)),
+    check_tree(Root, Child),
+    State#{ch:=Root}.
 
 -define(WIN_BAR_HEIGHT, 16).
 
@@ -972,19 +990,19 @@ tree_to_list(#split{obj=Obj, mode=Mode,w1=W1,w2=W2}, Path0, Acc0) ->
     SashPos = wxSplitterWindow:getSashPosition(Obj),
     {W,H} = wxSplitterWindow:getClientSize(Obj),
     Pos = case Mode of
-	      splitHorizontally -> round(100 * (SashPos / H));
-	      splitVertically -> round(100 * (SashPos / W))
+	      splitHorizontally -> round(1000 * (SashPos / H));
+	      splitVertically -> round(1000 * (SashPos / W))
 	  end,
     case Path0 of
 	[right|Path] ->
 	    Acc = tree_to_list(W2, Path, [{split_rev,Mode,Pos}|Acc0]),
-	    [split_complete|tree_to_list(W1, [], Acc)];
+	    tree_to_list(W1, [], Acc);
 	[left|Path] ->
 	    Acc = tree_to_list(W1, Path, [{split,Mode,Pos}|Acc0]),
-	    [split_complete|tree_to_list(W2, [], Acc)];
+	    tree_to_list(W2, [], Acc);
 	[] ->
 	    Acc = tree_to_list(W1, [], [{split,Mode,Pos}|Acc0]),
-	    [split_complete|tree_to_list(W2, [], Acc)]
+	    tree_to_list(W2, [], Acc)
     end;
 tree_to_list(#win{name=Name}, _, Acc) ->
     [Name|Acc].
