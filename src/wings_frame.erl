@@ -110,24 +110,28 @@ import_layout([geom], St) ->
     ok;
 import_layout(WinList, St) ->
     reset_layout(),
-    io:format("~p:~p: Layout Reset~n",[?MODULE,?LINE]),
-    imp_layout(WinList, [], St),
+    _Tree = imp_layout(WinList, [], St),
+    %% wx_object:call({import_layout, Tree}),
     ok.
 
 imp_layout([{split, Mode, Pos}|Rest], Stack, St) ->
     {[R,L],Cont} = imp_layout(Rest, [], St),
     io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    imp_layout(Cont, [{L,R}|Stack], St);
+    io:format("Path first ~p~n",[L]),
+    io:format("Path second ~p~n",[R]),
+    imp_layout(Cont, [{split, Mode, Pos, L,R}|Stack], St);
 imp_layout([{split_rev, Mode, Pos}|Rest], Stack, St) ->
     {[L,R],Cont} = imp_layout(Rest, [], St),
     io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    imp_layout(Cont, [{L,R}|Stack], St);
+    io:format("Path first ~p~n",[L]),
+    io:format("Path second ~p~n",[R]),
+    imp_layout(Cont, [{split, Mode, Pos, L,R}|Stack], St);
 imp_layout([split_complete|Cont], Stack, _St) ->
     {Stack, Cont};
 
 imp_layout([L|Rest], Stack, St) ->
     io:format("Restore : ~p~n", [{L, {50,50}, {500,400}, [{internal, true}]}]),
-    restore_window({L, {50,50}, {50,40}, [{internal, true}]}, St),
+    %restore_window({L, {50,50}, {50,40}, [{internal, true}]}, St),
     imp_layout(Rest, [L|Stack], St);
 imp_layout([], Stack, _St) ->
     hd(Stack).
@@ -136,22 +140,22 @@ restore_window({geom, _Pos, _Size, Ps}, _St) ->
     wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
 restore_window({Geom, Pos, Size, Ps}, St)
   when ?IS_GEOM(Geom) ->
-    wings:new_viewer(Geom, Pos, Size, [{tweak_draw,true}|Ps], St);
+    wings:new_viewer(Geom, validate_pos(Pos), Size, [{tweak_draw,true}|Ps], St);
 restore_window({Name,Pos,Size}, St) -> % OldFormat
     restore_window({Name,Pos,Size,[]}, St);
-restore_window({Module,{{plugin,_}=Name,{_,_}=Pos,{_,_}=Size,CtmData}}, St) ->
-    wings_plugin:restore_window(Module, Name, Pos, Size, CtmData, St);
-restore_window({{object,_}=Name,{_,_}=Pos,{_,_}=Size,Ps}, St) ->
+restore_window({Module,{{plugin,_}=Name,Pos,{_,_}=Size,CtmData}}, St) ->
+    wings_plugin:restore_window(Module, Name, validate_pos(Pos), Size, CtmData, St);
+restore_window({{object,_}=Name,Pos,{_,_}=Size,Ps}, St) ->
     wings_geom_win:window(Name, validate_pos(Pos), Size, Ps, St);
-restore_window({wings_outliner,{_,_}=Pos,{_,_}=Size, Ps}, St) ->
+restore_window({wings_outliner,Pos,{_,_}=Size, Ps}, St) ->
     wings_outliner:window(validate_pos(Pos), Size, Ps, St);
-restore_window({console,{_,_}=Pos,{_,_}=Size, Ps}, _St) ->
+restore_window({console,Pos,{_,_}=Size, Ps}, _St) ->
     wings_console:window(console, validate_pos(Pos), Size, Ps);
-restore_window({{tweak, tweak_palette},{_,_}=Pos, Size, Ps}, St) ->
+restore_window({{tweak, tweak_palette},Pos, Size, Ps}, St) ->
     wings_tweak_win:window(tweak_palette, validate_pos(Pos), Size, Ps, St);
-restore_window({{tweak, tweak_magnet},{_,_}=Pos, Size, Ps}, St) ->
+restore_window({{tweak, tweak_magnet},Pos, Size, Ps}, St) ->
     wings_tweak_win:window(tweak_magnet, validate_pos(Pos), Size, Ps, St);
-restore_window({{tweak, axis_constraint},{_,_}=Pos, Size, Ps}, St) ->
+restore_window({{tweak, axis_constraint},Pos, Size, Ps}, St) ->
     wings_tweak_win:window(axis_constraint, validate_pos(Pos), Size, Ps, St);
 restore_window(_, _) -> ok.
 
@@ -207,7 +211,7 @@ forward_event(_Ev) ->
 %% Window in new (frame) process %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--record(state, {toolbar, windows, overlay, images, active}).
+-record(state, {toolbar, windows, overlay, images, active, wip=[]}).
 -record(split, {obj, mode, w1, w2}).
 -record(win, {frame, win, name, title, bar, ps}).
 
@@ -319,7 +323,7 @@ handle_event(Ev, State) ->
 %%%%%%%%%%%%%%%%%%%%%%
 
 handle_call({new_window, Window, Name, Ps}, _From,
-	    #state{windows=Wins=#{loose:=Loose, ch:=Top}}=State) ->
+	    #state{windows=Wins=#{loose:=Loose, ch:=Top}, wip=Wip}=State) ->
     External = proplists:get_value(external, Ps),
     Internal = proplists:get_value(internal, Ps),
     Geom = proplists:get_value(top, Ps),
@@ -334,9 +338,9 @@ handle_call({new_window, Window, Name, Ps}, _From,
 	    wxFrame:show(Frame),
 	    {reply, ok, State#state{windows=Wins#{loose:=Loose#{Frame => Win}}}};
        Internal ->
-	    %Title = proplists:get_value(title, Ps),
-
-	    {reply, ok, State};
+	    Title = proplists:get_value(title, Ps),
+	    Win = Win0#win{title=Title, ps=#{close=>false, move=>false}},
+	    {reply, ok, State#state{wip=[Win|Wip]}};
        Geom -> %% Specialcase for geom window
 	    Title = proplists:get_value(title, Ps),
 	    #split{w1=Dummy} = Top,
@@ -346,6 +350,10 @@ handle_call({new_window, Window, Name, Ps}, _From,
 	    wxWindow:destroy(Dummy),
 	    {reply, ok, State#state{windows=Wins#{ch:=Top#split{w1=Win}}}}
     end;
+
+%% handle_call({imp_layout, Tree}, _, #state{windows=Wins=#{ch:=Top},wip=Wips} = State) ->
+%%     Root = setup_windows(Tree, Top, Wips),
+%%     {reply, ok, State#state{windows=Wins#{ch:=Root}, wip=[]}};
 
 handle_call({close, Win}, _From, State) ->
     io:format("~p:~p: Close Win ~p~n", [?MODULE,?LINE,Win]),
