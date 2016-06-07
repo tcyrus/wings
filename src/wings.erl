@@ -222,7 +222,8 @@ new_viewer(Name, Pos, Size, Props, St) ->
     Title = geom_title(Name),
     {Frame,Ps} = wings_frame:make_win(Title, [{size, Size}, {pos, Pos}|Props]),
     Context = wxGLCanvas:getContext(?GET(gl_canvas)),
-    Canvas = wings_gl:window(Frame, Context, true),
+    Show = proplists:is_defined(external, Ps),
+    Canvas = wings_gl:window(Frame, Context, true, Show),
     wings_wm:toplevel(Name, Canvas, Ps ++ initial_properties(), Op),
     set_drag_filter(Name),
     Name.
@@ -1606,16 +1607,16 @@ save_geom_props([], Acc) -> Acc.
 
 save_plugin_window(Name, Ns) ->
     case wings_plugin:get_win_data(Name) of
-      {M, {_,CtmData}} ->
-        {Pos,Size} = wings_wm:win_rect(Name),
-        WinInfo = {M, {Name, Pos, Size, CtmData}},
-        [WinInfo|save_windows_1(Ns)];
-      _ ->
-        save_windows_1(Ns)
+	{M, {_,CtmData}} ->
+	    {Pos,Size} = wings_wm:win_rect(Name),
+	    WinInfo = {M, {Name, Pos, Size, CtmData}},
+	    [WinInfo|save_windows_1(Ns)];
+	_ ->
+	    save_windows_1(Ns)
     end.
 
 initial_properties() ->
-    [{display_data,geom_display_lists}|wings_view:initial_properties()].
+    [{tweak_draw,true},{display_data,geom_display_lists}|wings_view:initial_properties()].
 
 mode_restriction(Modes) ->
     Win = wings_wm:this(),

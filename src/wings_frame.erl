@@ -86,9 +86,8 @@ register_win(Window, Name, Ps) ->
 reset_layout() ->
     %% Autouv needs to be reset...
     {ok, {Contained, Free}} = windows(),
-    IsWindow = fun({Split, _, _}) when Split =:= split;
-				       Split =:= split_rev -> false;
-		  (split_complete) -> false;
+    IsWindow = fun({Split, _, _})
+		     when Split =:= split; Split =:= split_rev -> false;
 		  (_) -> true
 	       end,
     Delete = fun(Name) ->
@@ -110,30 +109,28 @@ import_layout([geom], St) ->
     ok;
 import_layout(WinList, St) ->
     reset_layout(),
-    {Tree, _Rest} = imp_layout(WinList, [], undefined, St),
-    io:format("Tree: ~p~n",[Tree]),
-    Tree.
+    _ = imp_layout(WinList, [], undefined, St),
+    ok.
 
 imp_layout([{split, Mode, Pos}|Rest], Path, Split0, St) ->
-    {L,Cont0} = imp_layout(Rest, Path, Split0, St),
-    {R, Cont} = imp_layout(Cont0, [second|Path], {Mode,Pos}, St),
+    Cont0 = imp_layout(Rest, Path, Split0, St),
+    Cont  = imp_layout(Cont0, [second|Path], {Mode,Pos}, St),
     %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    {{split, Mode, Pos, L,R}, Cont};
+    Cont;
 imp_layout([{split_rev, Mode, Pos}|Rest], Path, Split0, St) ->
-    {R,Cont0} = imp_layout(Rest, Path, Split0, St),
-    {L, Cont} = imp_layout(Cont0, [first|Path], {Mode, Pos}, St),
+    Cont0 = imp_layout(Rest, Path, Split0, St),
+    Cont  = imp_layout(Cont0, [first|Path], {Mode, Pos}, St),
     %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    {{split, Mode, Pos, L,R}, Cont};
+    Cont;
 
 imp_layout([geom|Rest], _, _, _St) ->
-    %% wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]),
     %% restore_window({L, {50,50}, {50,40}, [{internal, geom}]}, St),
-    {geom,Rest};
+    Rest;
 imp_layout([L|Rest], [Last|Path], {Mode, Pos}, St) ->
     Restore = {lists:reverse([split(Mode,Last)|Path]), Pos},
     io:format("Restore: ~p~n", [{L, {50,50}, {500,400}, [{internal, Restore}]}]),
     restore_window({L, {50,50}, {50,40}, [{internal, Restore}]}, St),
-    {L, Rest}.
+    Rest.
 
 restore_window({geom, _Pos, _Size, Ps}, _St) ->
     wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
