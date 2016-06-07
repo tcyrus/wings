@@ -46,7 +46,7 @@ menu() ->
       "Unhide the cursor in case of a crash and it disappears"}].
 
 command(save_layout, _) ->
-    {ok, {Contained, _}} = wings_frame:windows(),
+    {ok, Contained} = wings_frame:export_layout(),
     io:format("Save: ~p~n",[Contained]),
     put(debug_win_layout, Contained),
     keep;

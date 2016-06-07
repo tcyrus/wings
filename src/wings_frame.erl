@@ -12,7 +12,7 @@
 -module(wings_frame).
 
 -export([top_menus/0, make_win/2, register_win/3, close/1, set_focus/1,
-	 windows/0, import_layout/2,
+	 export_layout/0, import_layout/2,
 	 get_overlay/0, overlay_draw/3, overlay_hide/1,
 	 get_icon_images/0, get_colors/0]).
 
@@ -64,14 +64,15 @@ make_win(Title, Opts) ->
 
 make_win(Parent, Title, Ps) ->
     FStyle = {style, ?wxCAPTION bor ?wxCLOSE_BOX bor ?wxRESIZE_BORDER},
-    Size = case lists:keyfind(size, 1, Ps) of
-	       {size, Sz} -> Sz;
-	       false  -> false
+    {Size, MinSize} = case lists:keyfind(size, 1, Ps) of
+			  {size, Sz} -> {Sz, Sz};
+			  false  -> {false, {100, 100}}
 	   end,
     Opts = case lists:keyfind(pos, 1, Ps) of
 	       {pos, Pos0} ->
 		   TopFrame = ?GET(top_frame),
-		   Pos = wxWindow:clientToScreen(TopFrame, Pos0),
+		   Pos0 = wxWindow:clientToScreen(TopFrame, Pos0),
+		   Pos  = validate_pos(Pos0, MinSize, wx_misc:displaySize()),
 		   [{pos,Pos}];
 	       false  ->
 		   []
@@ -85,7 +86,7 @@ register_win(Window, Name, Ps) ->
 
 reset_layout() ->
     %% Autouv needs to be reset...
-    {ok, {Contained, Free}} = windows(),
+    {ok, {Contained, Free}} = export_layout(),
     IsWindow = fun({Split, _, _})
 		     when Split =:= split; Split =:= split_rev -> false;
 		  (_) -> true
@@ -97,71 +98,22 @@ reset_layout() ->
 			 false -> receive {wm, {delete, Name}} -> ok end
 		     end
 	     end,
-    [Delete(Name) || Name <- Contained ++ Free, Name =/= geom, IsWindow(Name)],
-    io:format("~p:~p: Layout Reset~n",[?MODULE,?LINE]),
+    [Delete(Name) || Name <- Contained ++ Free,
+		     Name =/= geom, IsWindow(Name)],
     ok.
 
-windows() ->
-    wx_object:call(?MODULE, get_windows).
-
-import_layout([geom], St) ->
-    restore_window({geom, undefined, undefined, []}, St),
-    ok;
-import_layout(WinList, St) ->
-    reset_layout(),
-    _ = imp_layout(WinList, [], undefined, St),
-    ok.
-
-imp_layout([{split, Mode, Pos}|Rest], Path, Split0, St) ->
-    Cont0 = imp_layout(Rest, Path, Split0, St),
-    Cont  = imp_layout(Cont0, [second|Path], {Mode,Pos}, St),
-    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    Cont;
-imp_layout([{split_rev, Mode, Pos}|Rest], Path, Split0, St) ->
-    Cont0 = imp_layout(Rest, Path, Split0, St),
-    Cont  = imp_layout(Cont0, [first|Path], {Mode, Pos}, St),
-    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
-    Cont;
-
-imp_layout([geom|Rest], _, _, _St) ->
-    %% restore_window({L, {50,50}, {50,40}, [{internal, geom}]}, St),
-    Rest;
-imp_layout([L|Rest], [Last|Path], {Mode, Pos}, St) ->
-    Restore = {lists:reverse([split(Mode,Last)|Path]), Pos},
-    io:format("Restore: ~p~n", [{L, {50,50}, {500,400}, [{internal, Restore}]}]),
-    restore_window({L, {50,50}, {50,40}, [{internal, Restore}]}, St),
-    Rest.
-
-restore_window({geom, _Pos, _Size, Ps}, _St) ->
-    wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
-restore_window({Geom, Pos, Size, Ps}, St)
-  when ?IS_GEOM(Geom) ->
-    wings:new_viewer(Geom, validate_pos(Pos), Size, [{tweak_draw,true}|Ps], St);
-restore_window({Name,Pos,Size}, St) -> % OldFormat
-    restore_window({Name,Pos,Size,[]}, St);
-restore_window({Module,{{plugin,_}=Name,Pos,{_,_}=Size,CtmData}}, St) ->
-    wings_plugin:restore_window(Module, Name, validate_pos(Pos), Size, CtmData, St);
-restore_window({{object,_}=Name,Pos,{_,_}=Size,Ps}, St) ->
-    wings_geom_win:window(Name, validate_pos(Pos), Size, Ps, St);
-restore_window({wings_outliner,Pos,{_,_}=Size, Ps}, St) ->
-    wings_outliner:window(validate_pos(Pos), Size, Ps, St);
-restore_window({palette,Pos,{_,_}=Size, Ps}, St) ->
-    wings_palette:window(validate_pos(Pos), Size, Ps, St);
-restore_window({console,Pos,{_,_}=Size, Ps}, _St) ->
-    wings_console:window(console, validate_pos(Pos), Size, Ps);
-restore_window({{tweak, tweak_palette},Pos, Size, Ps}, St) ->
-    wings_tweak_win:window(tweak_palette, validate_pos(Pos), Size, Ps, St);
-restore_window({{tweak, tweak_magnet},Pos, Size, Ps}, St) ->
-    wings_tweak_win:window(tweak_magnet, validate_pos(Pos), Size, Ps, St);
-restore_window({{tweak, axis_constraint},Pos, Size, Ps}, St) ->
-    wings_tweak_win:window(axis_constraint, validate_pos(Pos), Size, Ps, St);
-restore_window(_, _) -> ok.
-
-validate_pos({X,Y}=Pos) ->
-    case Y < 0 of
-	false -> Pos;
-	true -> {X,20}
-    end.
+export_layout() ->
+    {Contained0, Free0} = wx_object:call(?MODULE, get_windows),
+    SaveCont = fun({_, _, _}=Split) -> Split;
+		  (Win) -> {Win, {-1,-1}, {-1,-1}, window_prop(Win)}
+	       end,
+    Contained = [SaveCont(Win) || Win <- Contained0, save_window(Win)],
+    SaveFree = fun(Win) ->
+		       {Pos, Size} = wings_wm:win_rect(Win),
+		       {Win, Pos, Size, window_prop(Win)}
+	       end,
+    Free = [SaveFree(Win) || Win <- Free0, save_window(Win)],
+    {Contained, Free}.
 
 get_icon_images() ->
     wx_object:call(?MODULE, get_images).
@@ -181,6 +133,98 @@ set_focus(Win) ->
 
 get_overlay() ->
     wx_object:call(?MODULE, get_overlay).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+validate_pos({X,Y}=Pos, {Sx, Sy}, {DW, DH}) when X > 0, Y > 0 ->
+    if (X+Sx) < DW, (Y+Sy) < DH -> Pos;
+       true -> {-1, -1}
+    end;
+validate_pos(_, _, _) -> {-1, -1}.
+
+import_layout({Contained, Free}, St) ->
+    reset_layout(),
+    _ = imp_layout(Contained, [], undefined, St),
+    _ = [restore_window(Win, St) || Win <- Free],
+    ok.
+
+save_window(console) -> true;
+save_window(palette) -> true;
+save_window({tweak, _}) -> true;
+save_window(outliner) -> true;
+save_window({object,_}) -> true;
+save_window(geom) -> true;
+save_window({geom,_}) -> true;
+save_window({plugin,_}) -> true;
+save_window({split,_,_}) -> true;
+save_window({split_rev,_,_}) -> true;
+save_window(_) -> false.
+
+window_prop(Geom) when ?IS_GEOM(Geom) ->
+    Ps = wings_wm:get_props(Geom),
+    lists:foldl(fun save_geom_props/2, [], Ps);
+window_prop({plugin, _}=Name) ->
+    case wings_plugin:get_win_data(Name) of
+	{M, {_,CtmData}} when is_list(CtmData) ->
+	    [{module, M}|CtmData];
+	_ -> []
+    end;
+window_prop(_) -> [].
+
+save_geom_props({show_axes,_}=P, Acc) -> [P|Acc];
+save_geom_props({show_groundplane,_}=P, Acc) -> [P|Acc];
+save_geom_props({show_info_text,_}=P, Acc) -> [P|Acc];
+save_geom_props({current_view,View}, Acc) ->
+    #view{fov=Fov,hither=Hither,yon=Yon} = View,
+    [{fov,Fov},{clipping_planes,{Hither,Yon}}|Acc];
+save_geom_props(_, Acc) -> Acc.
+
+
+imp_layout([{split, Mode, Pos}|Rest], Path, Split0, St) ->
+    Cont0 = imp_layout(Rest, Path, Split0, St),
+    Cont  = imp_layout(Cont0, [second|Path], {Mode,Pos}, St),
+    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    Cont;
+imp_layout([{split_rev, Mode, Pos}|Rest], Path, Split0, St) ->
+    Cont0 = imp_layout(Rest, Path, Split0, St),
+    Cont  = imp_layout(Cont0, [first|Path], {Mode, Pos}, St),
+    %io:format("Splitter ~p ~p ~p ~p~n", [Mode, Pos, L, R]),
+    Cont;
+
+imp_layout([{geom, _, _, Ps}|Rest], _, _, St) ->
+    restore_window({geom, {50,50}, {50,40}, Ps}, St),
+    Rest;
+imp_layout([{Win, _, _, Ps}|Rest], [Last|Path], {Mode, Pos}, St) ->
+    Restore = {lists:reverse([split(Mode,Last)|Path]), Pos},
+    io:format("Restore: ~p~n", [{Win, {50,50}, {500,400}, [{internal, Restore}]}]),
+    restore_window({Win, {50,50}, {50,40}, [{internal, Restore}|Ps]}, St),
+    Rest.
+
+restore_window({geom, _Pos, _Size, Ps}, _St) ->
+    wings_wm:set_win_props(geom, [{tweak_draw,true}|Ps]);
+restore_window({Geom, Pos, Size, Ps}, St)
+  when ?IS_GEOM(Geom) ->
+    wings:new_viewer(Geom, Pos, Size, [{tweak_draw,true}|Ps], St);
+restore_window({Name,Pos,Size}, St) -> % OldFormat
+    restore_window({Name,Pos,Size,[]}, St);
+restore_window({{object,_}=Name,Pos,{_,_}=Size,Ps}, St) ->
+    wings_geom_win:window(Name, Pos, Size, Ps, St);
+restore_window({wings_outliner,Pos,{_,_}=Size, Ps}, St) ->
+    wings_outliner:window(Pos, Size, Ps, St);
+restore_window({palette,Pos,{_,_}=Size, Ps}, St) ->
+    wings_palette:window(Pos, Size, Ps, St);
+restore_window({console,Pos,{_,_}=Size, Ps}, _St) ->
+    wings_console:window(console, Pos, Size, Ps);
+restore_window({{tweak, Win},Pos, Size, Ps}, St) ->
+    wings_tweak_win:window(Win, Pos, Size, Ps, St);
+restore_window({{plugin,_}=Name,Pos,{_,_}=Size,CtmData0}, St) ->
+    Module = proplists:get_value(module, CtmData0),
+    CtmData = proplists:delete(CtmData0),
+    wings_plugin:restore_window(Module, Name, Pos, Size, CtmData, St);
+restore_window({Module,{{plugin,_}=Name,Pos,{_,_}=Size,CtmData}}, St) -> %% Old plugin format
+    wings_plugin:restore_window(Module, Name, Pos, Size, CtmData, St);
+restore_window(_, _) -> ok.
+
 
 %%%%%%%% Internals %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Inside wings (process)
