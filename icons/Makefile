@@ -27,6 +27,7 @@ TARGET_FILES = $(ICONSETS:%=$(EBIN)/wings_icon_%.bundle)
 
 GEN_PS_ICONS=$(wildcard orig/bluecube-assests/*.png)
 PS_ICONS=$(patsubst %,bluecube/%,$(notdir $(GEN_PS_ICONS)))
+
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
