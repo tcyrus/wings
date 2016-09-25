@@ -14,11 +14,11 @@
 -export([init/0,menu/2,command/2]).
 -import(lists, [map/2,foldl/3,keyfind/3, mapfoldl/3,flatten/1]).
 
--define(DEF_IMAGE_TYPE, ".bmp").
+-define(DEF_IMAGE_TYPE, ".png").
 
--include("wings.hrl").
--include("e3d.hrl").
--include("e3d_image.hrl").
+-include_lib("wings/src/wings.hrl").
+-include_lib("wings/e3d/e3d.hrl").
+-include_lib("wings/e3d/e3d_image.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
 
 %% Collada export state record
@@ -51,14 +51,21 @@ init() ->
     true.
 
 menu({file,export}, Menu) ->
-    menu_entry(Menu);
+    menu_entry(Menu, true);
 menu({file, export_selected}, Menu) ->
-    menu_entry(Menu);
+    menu_entry(Menu, true);
+menu({file,import}, Menu) ->
+    menu_entry(Menu, false);
 menu(_, Menu) -> Menu.
 
-menu_entry(Menu) ->
-    Menu ++ [{"Collada (.dae)...", dae,[option]}].
+menu_entry(Menu, true) ->
+    Menu ++ [{"Collada (.dae)...", dae,[option]}];
+menu_entry(Menu, false) ->
+    Menu ++ [{"Collada (.dae)...", dae}].
 
+command({file, {import, dae}}, St) ->
+    Props = [{ext, ".dae"},{ext_desc, "Collada File"}],
+    wpa:import(Props, fun collada_import:import/1, St);
 command({file,{export,{dae,Ask}}}, St) ->
     Exporter = fun(Ps, Fun) -> wpa:export(Ps, Fun, St) end,
     do_export(Ask, export, Exporter, St);
@@ -76,7 +83,7 @@ do_export(Attr, _Op, Exporter, _St) when is_list(Attr) ->
     set_pref(Attr),
     SubDivs = proplists:get_value(subdivisions, Attr, 0),
     Uvs = proplists:get_bool(include_uvs, Attr),
-    Units = proplists:get_value(units, Attr),    
+    Units = proplists:get_value(units, Attr),
     %% If smoothing groups are not wanted, we'll turn off
     %% export of hard edges. That will create only one smoothing group.
     HardEdges = proplists:get_bool(include_normals, Attr),
