@@ -13,6 +13,8 @@
 -module(collada_import).
 -export([import/1]).
 -include_lib("wings/e3d/e3d.hrl").
+%% Sigh using local function in state machine
+-compile(export_all).
 
 -record(mat,
         {refs=#{},
@@ -30,7 +32,7 @@
              val %% Temporary return value
             }).
 
--define(TEST, true).
+%% -define(TEST, true).
 
 import(File) ->
     EF = {event_fun, fun top/3},
@@ -292,7 +294,7 @@ scene(Es, {endElement, _, "scene", _}, _) ->
 lib_scenes(new, Es, {startElement, _, "visual_scene", _, As}, _) ->
     replace(attrs(As, #{nodes=>[]}), Es);
 lib_scenes(_, Es, {startElement, _, "node", _, As}, _) ->
-    push({node, attrs(As, #{matrix=>#{}, geom=>[], mats=>#{}})}, Es);
+    push({node, attrs(As, #{matrix=>[], geom=>[], mats=>#{}})}, Es);
 lib_scenes(#{nodes:=Ns}=Data, #es{val=Val}=Es, {endElement, _, "node", _}, _) ->
     case maps:get(geom, Val) of
 	[] -> Es;
@@ -304,13 +306,13 @@ lib_scenes(new, Es, {endElement, _, "library_visual_scenes", _}, _) ->
     pop(Es).
 
 node(#{matrix:=M}, Es, {startElement, _, "translate", _, _}, _) ->
-    push(chars, push({matrix, M#{sid=>"translate"}}, Es));
-node(#{matrix:=M}, Es, {startElement, _, "rotate", _, As}, _) ->
-    push(chars, push({matrix, attrs(As, M)}, Es));
+    push(chars, push({matrix, {translate, M}}, Es));
+node(#{matrix:=M}, Es, {startElement, _, "rotate", _, _As}, _) ->
+    push(chars, push({matrix, {rotate, M}}, Es));
 node(#{matrix:=M}, Es, {startElement, _, "scale", _, _As}, _) ->
-    push(chars, push({matrix, M#{sid=>"scale"}}, Es));
+    push(chars, push({matrix, {scale, M}}, Es));
 node(Data, #es{val=Val}=Es, end_matrix, _) ->
-    replace(Data#{matrix:=Val}, Es);
+    replace(Data#{matrix:=lists:reverse(Val)}, Es);
 node(#{geom:=Urls}=Data, Es, {startElement, _, "instance_geometry", _, As}, _) ->
     #{url:=Url} = attrs(As),
     replace(Data#{geom=>[Url|Urls]}, Es);
@@ -325,8 +327,9 @@ node(_, Es, {endElement, _, _, _}, _) ->
     %% Ignore camera and lights for now
     Es.
 
-matrix(#{sid:=Type}=Data, #es{val=Val}=Es, {endElement, _, _, _}, Loc) ->
-    invoke(pop(Es#es{val=Data#{Type=>Val}}), end_matrix, Loc).
+matrix({Type,Data}, #es{val=Val}=Es, {endElement, _, _, _}, Loc) ->
+    Floats = to_floats(Val),
+    invoke(pop(Es#es{val=[{Type, Floats}|Data]}), end_matrix, Loc).
 
 %%%%%%%%%%%%%%%%%%%%%%%%
 common_mat(Data, Es, {startElement, _, TechOrColor, _, _As0}, _) ->
@@ -344,8 +347,8 @@ common_newparam(Data, Es, {startElement, _, "surface", _, As}, _) ->
     push({surface, attrs(As, Data)}, Es);
 common_newparam(Data, Es, {startElement, _, "sampler2D", _, As}, _) ->
     push({sampler2D, attrs(As, Data)}, Es);
-common_newparam(Data, Es, {endElement, _, "newparam", _}=Ev, Loc) ->
-    invoke(pop(Es#es{val=Data}), Ev, Loc);
+common_newparam(_Data, #es{val=Val}=Es, {endElement, _, "newparam", _}=Ev, Loc) ->
+    invoke(pop(Es#es{val=Val}), Ev, Loc);
 common_newparam(_Data, Es, {endElement, _, _, _}, _) ->
     Es.
 
@@ -673,20 +676,31 @@ rev_face(#e3d_face{vs=Vs,vc=Vc,tx=Tx,ns=Ns,mat=Mat}) ->
               tx=lists:reverse(Tx),ns=lists:reverse(Ns),
 	      mat=Mat}.
 
-make_materials(#mat{refs=Refs, defs=Defs, images=Imgs}=_Mat, _Scene) ->
+make_materials(#mat{refs=Refs, defs=Defs, images=Imgs}=_Mat) ->
     %% io:format("Scene: ~p ~n", [_Scene]),
     [{Id,make_material(Ref, Defs, Imgs)} || #{id:=Id}=Ref <- maps:values(Refs)].
 
-make_material(#{id:=Id, instance_effect:=[$#|Effect]}=Ref, Defs, _Imgs) ->
+make_material(#{id:=Id, instance_effect:=[$#|Effect]}=Ref, Defs, Imgs) ->
     Name = maps:get(name, Ref, Id),
     Def  = maps:get(Effect, Defs),
+    Shininess = case prop_get(shininess, Def, 0.0) of
+		    Shin when Shin > 1.0 -> %% Assume OpenGL where 128 is max
+			Shin / 128;
+		    Shin -> Shin
+		end,
     DefList = [{diffuse,prop_get(diffuse, Def, {1.0, 1.0, 1.0, 1.0})},
 	       {ambient,prop_get(ambient, Def, {1.0, 1.0, 1.0, 1.0})},
 	       {specular,prop_get(specular, Def, {0.0,0.0,0.0,0.0})},
 	       {emission,prop_get(emission, Def, {0.0,0.0,0.0,0.0})},
-	       {shininess,prop_get(shininess, Def, 0.0)},
+	       {shininess, Shininess},
 	       {vertex_colors,multiply}],
-    {list_to_atom(Name), [{opengl, DefList}]}.
+    Textures = case maps:get(diffuse, Def, false) of
+		   #{texture:=ImageRef} ->
+		       make_maps(ImageRef, Def, Imgs);
+		   _ -> []
+	       end,
+    %% io:format("Name: ~p Maps ~p~n", [Name, Textures]),
+    {list_to_atom(Name), [{opengl, DefList}|Textures]}.
 
 prop_get(What, Def, Default) ->
     case maps:get(What, Def, undefined) of
@@ -697,14 +711,33 @@ prop_get(What, Def, Default) ->
 	    Default
     end.
 
+make_maps(ImageRef, Def, Images) ->
+    case make_maps_1(ImageRef, Def, Images) of
+	undefined -> [];
+	File -> [{maps, [{diffuse, File}]}]
+    end.
+
+make_maps_1(ImageRef, Def, Imgs) ->
+    case maps:get(ImageRef, Def, undefined) of
+	undefined ->
+	    case maps:get(ImageRef, Imgs, undefined) of
+		#{file:=File} -> File;
+		_Fail -> undefined
+	    end;
+	#{"source":=Source} ->
+	    make_maps_1(Source, Def, Imgs);
+	#{"init_from":=FileRef} ->
+	    make_maps_1(FileRef, Def, Imgs)
+    end.
 make_file(#es{materials=Mat, scene=#{nodes:=Nodes}, mesh=Mesh0}) ->
-    MatList0 = make_materials(Mat, Nodes),
+    MatList0 = make_materials(Mat),
     MatMap = maps:from_list(MatList0),
     MeshMap = maps:from_list(Mesh0),
     MeshL = build_meshes(Nodes, MeshMap, MatMap, []),
     #e3d_file{objs=MeshL, mat=maps:values(MatMap)}.
 
-build_meshes([#{id:=NodeId, geom:=[Gs], mats:=Mats0}=Node|Ns], MeshMap, MatMap, Acc) ->
+build_meshes([#{id:=NodeId, geom:=[Gs], mats:=Mats0, matrix:=MatrixInfo}=Node|Ns],
+	     MeshMap, MatMap, Acc) ->
     [$#|GsId] = Gs,
     Name = maps:get(name, Node, NodeId),
     #{GsId:=#e3d_mesh{fs=Fs0}=Mesh} = MeshMap,
@@ -718,13 +751,27 @@ build_meshes([#{id:=NodeId, geom:=[Gs], mats:=Mats0}=Node|Ns], MeshMap, MatMap, 
 			F#e3d_face{mat=[maps:get(MId, Mats)]}
 		end,
     Fs = [Translate(F) || F <- Fs0],
-    Obj = #e3d_object{name=Name, obj=Mesh#e3d_mesh{fs=Fs}},
+    Matrix = lists:foldl(fun make_matrix/2, e3d_mat:identity(), MatrixInfo),
+    Obj = #e3d_object{name=Name, obj=Mesh#e3d_mesh{fs=Fs, matrix=Matrix}},
     build_meshes(Ns, MeshMap, MatMap, [Obj|Acc]);
 build_meshes([], _, _, Acc) -> Acc.
 
+make_matrix({rotate, [_,_,_,0.0]}, M) ->
+    M;
+make_matrix({rotate, [X,Y,Z,Rad]}, M) ->
+    Deg = Rad*180.0/math:pi(),
+    e3d_mat:mul(e3d_mat:rotate(Deg, {X,Y,Z}), M);
+make_matrix({translate, [0.0,0.0,0.0]}, M) ->
+    M;
+make_matrix({translate, [X,Y,Z]}, M) ->
+    e3d_mat:mul(e3d_mat:translate(X,Y,Z), M);
+make_matrix({scale, [1.0,1.0,1.0]}, M) ->
+    M;
+make_matrix({scale, [X,Y,Z]}, M) ->
+    e3d_mat:mul(e3d_mat:scale(X,Y,Z), M).
+
 
 -ifdef(TEST).
--compile(export_all).
 test() ->
     Dir = case os:type() of
 	      {unix, darwin} -> "/Users/dgud/Dropbox/src/Collada";
@@ -733,32 +780,32 @@ test() ->
 	  end,
     Files = [
 	     "wings-box-2mat.dae"
-	     %% ,"AsXML.xml"
-             %% ,"COLLADA.dae"
-             %% ,"COLLADA_triangulate.dae"
-             %% ,"Cinema4D.dae"
-             %% ,"ConcavePolygon.dae"
-	     %% ,"anims_with_full_rotations_between_keys.DAE"
-	     %% ,"cameras.dae"
-             %% ,"cube_UTF16LE.dae"
-             %% ,"cube_UTF8BOM.dae"
-             %% ,"cube_emptyTags.dae"
-             %% ,"cube_triangulate.dae"
-             %% ,"cube_tristrips.dae"
-             %% ,"cube_with_2UVs.DAE"
-             %% ,"cube_xmlspecialchars.dae"
-             %% ,"duck.dae"
-             %% ,"duck_triangulate.dae"
-             %% ,"earthCylindrical.DAE"
-             %% ,"kwxport_test_vcolors.dae"
-             %% ,"library_animation_clips.dae"
-             %% ,"lights.dae"
-             %% ,"regr01.dae"
-             %% ,"sphere.dae"
-             %% ,"sphere_triangulate.dae"
-             %% ,"teapot_instancenodes.DAE"
-             %% ,"teapots.DAE"
-	     %% , "wings.dae"
+	     ,"AsXML.xml"
+             ,"COLLADA.dae"
+             ,"COLLADA_triangulate.dae"
+             ,"Cinema4D.dae"
+             ,"ConcavePolygon.dae"
+	     ,"anims_with_full_rotations_between_keys.DAE"
+	     ,"cameras.dae"
+             ,"cube_UTF16LE.dae"
+             ,"cube_UTF8BOM.dae"
+             ,"cube_emptyTags.dae"
+             ,"cube_triangulate.dae"
+             ,"cube_tristrips.dae"
+             ,"cube_with_2UVs.DAE"
+             ,"cube_xmlspecialchars.dae"
+             ,"duck.dae"
+             ,"duck_triangulate.dae"
+             ,"earthCylindrical.DAE"
+             ,"kwxport_test_vcolors.dae"
+             ,"library_animation_clips.dae"
+             ,"lights.dae"
+             ,"regr01.dae"
+             ,"sphere.dae"
+             ,"sphere_triangulate.dae"
+             ,"teapot_instancenodes.DAE"
+             ,"teapots.DAE"
+	     ,"wings.dae"
 	    ],
     Imports = [import(filename:join(Dir, File)) || File <- Files],
     %% [io:format("~P~n",[Scene,20]) || Scene <- Imports],
