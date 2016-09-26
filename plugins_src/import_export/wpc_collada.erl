@@ -88,7 +88,7 @@ do_export(Attr, _Op, Exporter, _St) when is_list(Attr) ->
     %% export of hard edges. That will create only one smoothing group.
     HardEdges = proplists:get_bool(include_normals, Attr),
     Ps = [{include_uvs,Uvs},{units,Units},{include_hard_edges,HardEdges},
-	  {subdivisions,SubDivs},{include_hard_edges,HardEdges}|props()],
+	  {subdivisions,SubDivs}|props()],
     Exporter(Ps, export_fun(Attr)).
 
 export_fun(Attr) ->
@@ -168,8 +168,8 @@ export_transform(Contents, Attr) ->
     e3d_file:transform(Contents, Mat).
 
 dialog(Type) ->
-    [wpa:dialog_template(?MODULE, units), panel, 
-     wpa:dialog_template(?MODULE, Type, [include_colors])].
+    [wpa:dialog_template(?MODULE, units), panel,
+     wpa:dialog_template(?MODULE, Type, [include_colors, include_normals])].
 
 props() ->
     [{ext,".dae"},{ext_desc,?__(1,"Collada file")}].
@@ -194,11 +194,10 @@ segment_by_material(#e3d_mesh{fs=Fs}) ->
     FacesByMaterial0 = gb_trees:empty(),
     {Segs,_} = foldl(fun (#e3d_face{mat=Mats}=Face, {Tree0,Index}) ->
 		  Tree1 = case gb_trees:lookup(Mats, Tree0) of
-			     {value,_} ->
-				 FaceList0 = gb_trees:get(Mats, Tree0),
-				 FaceList = [{Index,Face}|FaceList0],
-				 gb_trees:update(Mats, FaceList, Tree0);
-			     none ->
+                              {value,FaceList0} ->
+                                  FaceList = [{Index,Face}|FaceList0],
+                                  gb_trees:update(Mats, FaceList, Tree0);
+                              none ->
 				  gb_trees:insert(Mats, [{Index,Face}], Tree0)
 			 end,
 		  {Tree1,Index+1}
@@ -226,10 +225,11 @@ make_scene_node(ObjName, ObjMats) ->
 
 make_geometry1([], _, _, Acc, _) ->
     Acc;
-make_geometry1([Mesh | Meshes], Prefix, Counter,
+make_geometry1([Mesh0 | Meshes], Prefix, Counter,
 	       #c_exp{objnames=ObjNames,
 		      visualscenenodes=VisualSceneNodes}=ExpState0,
 	       MatDefs) ->
+    Mesh = e3d_mesh:vertex_normals(Mesh0),
     Name = Prefix ++ "-" ++ num_to_text(Counter),
     FacesByMaterial = segment_by_material(Mesh),
     {ExpState1,MatsForObj} = foldl(
@@ -347,8 +347,8 @@ make_mesh_source_pos(Name, Mesh) ->
 					length(Verts))]},
     {source,[{id,Name ++ "-Pos"}],[FloatArray,TechCommon]}.
 
-make_mesh_source_normals(Name, Mesh) ->
-    Normals = triple_to_array(get_normals(Mesh)),
+make_mesh_source_normals(Name, #e3d_mesh{ns=Ns}) ->
+    Normals = triple_to_array(Ns),
     FloatArray = make_floatarray(Name ++ "-Normal-array",
 				 fun floatlist_to_string/1, Normals),
     TechCommon = {technique_common,
@@ -380,63 +380,39 @@ double_to_array([{U,V}|Tail]) -> [U,V|double_to_array(Tail)].
 
 %% all lists must be same length
 %% make a list of Faces, Normals, and UVs
-make_fnuv_in_order([], _, []) ->
-    [];
-make_fnuv_in_order([Face|Faces], NormalIndex, [UV|UVs]) ->
-    [Face,NormalIndex,UV|make_fnuv_in_order(Faces, NormalIndex, UVs)].
+make_fnuv_in_order([], [], []) ->  [];
+make_fnuv_in_order([Face|Faces], [N|Ns], [UV|UVs]) ->
+    [Face,N,UV|make_fnuv_in_order(Faces, Ns, UVs)].
 
 %% make a list of Faces, Normals, and UVs,
-%% use the normal index as the UV coord
-make_fn_in_order([], _) ->
-    [];
-make_fn_in_order([Face | Faces], NormalIndex) ->
-    [Face,NormalIndex,NormalIndex|make_fn_in_order(Faces, NormalIndex)].
-
-get_normals(Mesh) ->
-    gb_trees:values(face_normals(Mesh#e3d_mesh.fs,
-				 list_to_tuple(Mesh#e3d_mesh.vs))).
-
-%% from e3d_mesh
-face_normals(Ftab, Vtab) ->
-    {Ns,_} = mapfoldl(fun(#e3d_face{vs=Vs0}, Face) ->
-				    Vs = [element(V+1, Vtab) || V <- Vs0],
-				    {{Face,e3d_vec:normal(Vs)},Face+1}
-			    end, 0, Ftab),
-    gb_trees:from_orddict(Ns).
+make_fn_in_order([], [], _) ->  [];
+make_fn_in_order([Face | Faces],  [N|Ns], TxEmpty) ->
+    [Face,N,TxEmpty|make_fn_in_order(Faces, Ns, TxEmpty)].
 
 make_vcount_node(CountList) ->
-    VCountData = flatten(string:join(map(
-				       fun (Count) ->
-					       io_lib:format("~w",[Count]) end,
-				       CountList), " ")),
+    VCountData = index_list(CountList),
     {vcount,[VCountData]}.
 
-%% without UVs
-make_p_data(Indices, _, [], EmptyIndex) ->
-    List = make_fn_in_order(Indices, EmptyIndex),
-    PData = flatten(string:join(map(
-				  fun (Index) ->
-					  io_lib:format("~w",[Index]) end,
-				  List), " ")),
-    PData;
-%% with UVs
-make_p_data(Indices, NormalIndex, Tx,_) ->
-    %% VERTEX NORMAL TEXCOORD ... repeated
-    List = make_fnuv_in_order(Indices, NormalIndex, Tx),
-    PData = flatten(string:join(map(
-				      fun (Index) ->
-					      io_lib:format("~w",[Index]) end,
-				      List), " ")),
-    PData.
+%% VERTEX NORMAL TEXCOORD ... repeated
+make_p_data(Indices, Ns, [], EmptyIndex) ->
+    %% without UVs
+    List = make_fn_in_order(Indices, Ns, EmptyIndex),
+    index_list(List);
+make_p_data(Indices, Ns, Tx, _) ->
+    %% with UVs
+    List = make_fnuv_in_order(Indices, Ns, Tx),
+    index_list(List).
+
+index_list(List) ->
+    Text = fun (Index) -> io_lib:format("~w",[Index]) end,
+    flatten(string:join(map(Text, List), " ")).
 
 %% MatFaces is the set of faces that have the same material
 make_polylist(Name, MatFaces, EmptyIndex)->
-    {Ps,_} = mapfoldl(fun ({NormalIndex,
-			    #e3d_face{tx=FaceTx,vs=Indices}},
-			   TxEmptyIndex) ->
-			      {make_p_data(Indices, NormalIndex,
-					   FaceTx, TxEmptyIndex),TxEmptyIndex}
-		      end,EmptyIndex,MatFaces),
+    Add = fun ({_, #e3d_face{ns=Ns, tx=FaceTx,vs=Indices}}, TxEmptyIndex) ->
+                  {make_p_data(Indices, Ns, FaceTx, TxEmptyIndex),TxEmptyIndex}
+          end,
+    {Ps,_} = mapfoldl(Add,EmptyIndex,MatFaces),
 
     {_,#e3d_face{mat=[Material|_]}} = hd(MatFaces),
     PNodeData = string:join(Ps, " "),
