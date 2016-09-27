@@ -1574,13 +1574,11 @@ save_windows() ->
     TopSize = wxWindow:getSize(?GET(top_frame)),
     wings_pref:set_value(window_size, TopSize),
     {Contained, Free} = wings_frame:export_layout(),
-    wings_pref:set_value(saved_windows, Free),
-    wings_pref:set_value(saved_cont_windows, Contained).
+    wings_pref:set_value(saved_windows2, {Contained, Free}).
 
 restore_windows(St) ->
-    Free = wings_pref:get_value(saved_windows, []),
-    Contained = wings_pref:get_value(saved_cont_windows, []),
-    wings_frame:import_layout({Contained, Free}, St).
+    Windows = wings_pref:get_value(saved_windows2, {[],[]}),
+    wings_frame:import_layout(Windows, St).
 
 initial_properties() ->
     [{tweak_draw,true},{display_data,geom_display_lists}|wings_view:initial_properties()].

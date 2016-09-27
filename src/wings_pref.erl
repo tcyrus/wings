@@ -996,11 +996,12 @@ save_pref_category([{windows,Bool}|Options], List, Defaults, St, Acc0) ->
     C2 = lists:keyfind(console_save_lines,1,List),
     C3 = lists:keyfind(console_width,1,List),
     WinSize = lists:keyfind(window_size,1,List),
-    {WC,WF} = wings_frame:export_layout(),
+    WCWF = wings_frame:export_layout(),
     Windows = [WinSize,C1,C2,C3],
-    Acc = if Bool -> [{windows,WF}, {windows_cont, WC}|Acc0];
-             true -> Acc0 end,
-    NewList = (List--Windows)--[{saved_windows,WF}, {saved_windows_cont,WC}],
+    Acc = if Bool -> [{saved_windows2,WCWF}|Acc0];
+             true -> Acc0
+          end,
+    NewList = (List--Windows)--[{saved_windows2,WCWF}],
     save_pref_category(Options, NewList,  Defaults--Windows, St, Acc);
 save_pref_category([], _, _, _, Acc) -> Acc.
 
@@ -1021,11 +1022,9 @@ load_pref_category([{graphical,true}|Options], List, St) ->
     load_pref_category(Options, List, St);
 load_pref_category([{windows,true}|Options], List, St) ->
     %% Load preference windows and remove any old windows
-    case {lists:keyfind(windows, 1, List), lists:keyfind(windows_cont, 1, List)} of
-        {{_,WF}, false} ->
-	    wings_frame:import_layout({[], WF}, St);
-	{{_,WF}, {_,WC}} ->
-	    wings_frame:import_layout({WC, WF}, St);
+    case lists:keyfind(saved_windows2, 1, List) of
+        {saved_windows2, {_WC,_WF} = WCWF} ->
+            wings_frame:import_layout(WCWF, St);
         _ -> ok
     end,
     load_pref_category(Options, List, St);
