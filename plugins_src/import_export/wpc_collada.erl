@@ -12,7 +12,7 @@
 %%
 -module(wpc_collada).
 -export([init/0,menu/2,command/2]).
--import(lists, [map/2,foldl/3,keyfind/3, mapfoldl/3,flatten/1]).
+-import(lists, [map/2,foldl/3,keyfind/3,flatten/1]).
 
 -define(DEF_IMAGE_TYPE, ".png").
 
@@ -246,12 +246,12 @@ make_geometry1([Mesh0 | Meshes], Prefix, Counter,
     NormalsNode = make_mesh_source_normals(Name,Mesh),
     VertsNode = make_mesh_verts(Name),
     %% EmptyIndex is used for materials that don't have UV coords
-    {UVsNode,EmptyIndex} = make_mesh_uvs(Name,Mesh),
-    {PolysNode,_} = mapfoldl(fun (MatFaces, TxEmptyIndex) ->
-			    {make_polylist(Name, MatFaces, TxEmptyIndex),
-			     TxEmptyIndex}
-		    end, EmptyIndex, gb_trees:values(FacesByMaterial)),
-    MeshNode = {mesh,[PosNode, NormalsNode, UVsNode, VertsNode] ++ PolysNode},
+    {UVsNode,TxEmpty} = make_mesh_uvs(Name,Mesh),
+    {VCsNode,VcEmpty} = make_mesh_vcs(Name,Mesh),
+    Empty = {TxEmpty, VcEmpty},
+    BuildPoly = fun(MatFaces) -> make_polylist(Name, MatFaces, Empty) end,
+    PolysNode = [BuildPoly(MFaces) || MFaces <- gb_trees:values(FacesByMaterial)],
+    MeshNode = {mesh,[PosNode, NormalsNode, UVsNode, VCsNode, VertsNode] ++ PolysNode},
     GeomNode = {geometry,[{name,Name},{id,Name}],[MeshNode]},
     ExpState3 = ExpState2#c_exp{geoms=[GeomNode|ExpState2#c_exp.geoms]},
     make_geometry1(Meshes, Prefix, Counter+1, ExpState3, MatDefs).
@@ -357,15 +357,34 @@ make_mesh_source_normals(Name, #e3d_mesh{ns=Ns}) ->
     {source,[{id,Name ++ "-Normal"}],[FloatArray,TechCommon]}.
 
 make_mesh_uvs(Name, #e3d_mesh{tx=Tx}) ->
-    %% the last UV coord is used by the default material
-    UVs = double_to_array(Tx) ++ [0.0000,0.0000],
-    FloatArray = make_floatarray(Name ++ "-UV-array",
-				 fun floatlist_to_string/1, UVs),
-    TechCommon = {technique_common,
-		  [make_uvsource_accessor(Name ++ "-UV-array",
-					  length(UVs))]},
-    {{source,[{id,Name ++ "-UV"}],
-      [FloatArray,TechCommon]},(length(UVs) div 2)-1}.
+    %% the last UV coord is used by faces lacking uv-coords
+    case double_to_array(Tx) of
+        [] -> {[], 0};
+        UVs0 ->
+            UVs = UVs0 ++ [0.0000,0.0000],
+            FloatArray = make_floatarray(Name ++ "-UV-array",
+                                         fun floatlist_to_string/1, UVs),
+            TechCommon = {technique_common,
+                          [make_uvsource_accessor(Name ++ "-UV-array",
+                                                  length(UVs))]},
+            {{source,[{id,Name ++ "-UV"}],
+              [FloatArray,TechCommon]},(length(UVs) div 2)-1}
+    end.
+
+make_mesh_vcs(Name, #e3d_mesh{vc=Vc}) ->
+    %% the last VC coord is used by the faces lacking vc
+    case triple_to_array(Vc) of
+        [] -> {[], 0};
+        VCs0 ->
+            VCs = VCs0 ++ [1.0,1.0,1.0],
+            FloatArray = make_floatarray(Name ++ "-VC-array",
+                                         fun floatlist_to_string/1, VCs),
+            TechCommon = {technique_common,
+                          [make_vcsource_accessor(Name ++ "-VC-array",
+                                                  length(VCs))]},
+            {{source,[{id,Name ++ "-VC"}],
+              [FloatArray,TechCommon]},(length(VCs) div 3)-1}
+    end.
 
 make_mesh_verts(Name) ->
     Input = {input,[{semantic,"POSITION"},{source,"#" ++ Name ++ "-Pos"}],[]},
@@ -379,28 +398,42 @@ double_to_array([]) -> [];
 double_to_array([{U,V}|Tail]) -> [U,V|double_to_array(Tail)].
 
 %% all lists must be same length
-%% make a list of Faces, Normals, and UVs
-make_fnuv_in_order([], [], []) ->  [];
-make_fnuv_in_order([Face|Faces], [N|Ns], [UV|UVs]) ->
-    [Face,N,UV|make_fnuv_in_order(Faces, Ns, UVs)].
-
-%% make a list of Faces, Normals, and UVs,
-make_fn_in_order([], [], _) ->  [];
-make_fn_in_order([Face | Faces],  [N|Ns], TxEmpty) ->
-    [Face,N,TxEmpty|make_fn_in_order(Faces, Ns, TxEmpty)].
+%% make a list of Faces, Normals
+make_fn([Face|Faces], [N|Ns]) -> [Face,N|make_fn(Faces, Ns)];
+make_fn([], []) ->  [].
+%% make a list of Faces, Normals, and UVs or Colors,
+make_fnd([Face|Faces], [N|Ns], [D|Ds], Def) ->
+    [Face,N,D|make_fnd(Faces, Ns, Ds, Def)];
+make_fnd([Face|Faces], [N|Ns], [], Def) ->
+    [Face,N,Def|make_fnd(Faces, Ns, [], Def)];
+make_fnd([], [], [], _) ->  [].
+%% make a list of Faces, Normals, UVs and Colors,
+make_fnuvc([Face|Faces], [N|Ns], [Tx|Uvs], [Vc|Vcs], Def) ->
+    [Face,N,Tx,Vc|make_fnuvc(Faces, Ns, Uvs, Vcs, Def)];
+make_fnuvc([Face|Faces], [N|Ns], [Tx|Uvs], [], {_,Vc}=Def) ->
+    [Face,N,Tx,Vc|make_fnuvc(Faces, Ns, Uvs, [], Def)];
+make_fnuvc([Face|Faces], [N|Ns], [], [Vc|Vcs], {Tx,_}=Def) ->
+    [Face,N,Tx,Vc|make_fnuvc(Faces, Ns, [], Vcs, Def)];
+make_fnuvc([Face|Faces], [N|Ns], [], [], {Tx,Vc}=Def) ->
+    [Face,N,Tx,Vc|make_fnuvc(Faces, Ns, [], [], Def)];
+make_fnuvc([], [], [], [], _) -> [].
 
 make_vcount_node(CountList) ->
     VCountData = index_list(CountList),
     {vcount,[VCountData]}.
 
-%% VERTEX NORMAL TEXCOORD ... repeated
-make_p_data(Indices, Ns, [], EmptyIndex) ->
-    %% without UVs
-    List = make_fn_in_order(Indices, Ns, EmptyIndex),
+%% VERTEX NORMAL [TEXCOORD] [COLOR]... repeated
+make_p_data(Indices, Ns, _, _, {0,0}) ->
+    List = make_fn(Indices, Ns),
     index_list(List);
-make_p_data(Indices, Ns, Tx, _) ->
-    %% with UVs
-    List = make_fnuv_in_order(Indices, Ns, Tx),
+make_p_data(Indices, Ns, Tx, [], {TxEmpty,0}) ->
+    List = make_fnd(Indices, Ns, Tx, TxEmpty),
+    index_list(List);
+make_p_data(Indices, Ns, [], Vc, {0,VcEmpty}) ->
+    List = make_fnd(Indices, Ns, Vc, VcEmpty),
+    index_list(List);
+make_p_data(Indices, Ns, Tx, Vc, Empty) ->
+    List = make_fnuvc(Indices, Ns, Tx, Vc, Empty),
     index_list(List).
 
 index_list(List) ->
@@ -408,11 +441,11 @@ index_list(List) ->
     flatten(string:join(map(Text, List), " ")).
 
 %% MatFaces is the set of faces that have the same material
-make_polylist(Name, MatFaces, EmptyIndex)->
-    Add = fun ({_, #e3d_face{ns=Ns, tx=FaceTx,vs=Indices}}, TxEmptyIndex) ->
-                  {make_p_data(Indices, Ns, FaceTx, TxEmptyIndex),TxEmptyIndex}
+make_polylist(Name, MatFaces, EmptyIs)->
+    Add = fun ({_, #e3d_face{ns=Ns,tx=Tx,vc=Vc,vs=Indices}}) ->
+                  make_p_data(Indices, Ns, Tx, Vc, EmptyIs)
           end,
-    {Ps,_} = mapfoldl(Add,EmptyIndex,MatFaces),
+    Ps = map(Add,MatFaces),
 
     {_,#e3d_face{mat=[Material|_]}} = hd(MatFaces),
     PNodeData = string:join(Ps, " "),
@@ -422,11 +455,23 @@ make_polylist(Name, MatFaces, EmptyIndex)->
 		     {source,"#" ++ Name ++ "-Vtx"}],[]},
     NInput = {input,[{offset,"1"},{semantic,"NORMAL"},
 		     {source,"#" ++ Name ++ "-Normal"}],[]},
-    UVInput = {input,[{offset,"2"},{semantic,"TEXCOORD"},
-		      {source,"#" ++ Name ++ "-UV"}],[]},
+    UVandVC = case EmptyIs of
+                  {0,0} -> [];
+                  {_,0} ->
+                      [{input,[{offset,"2"},{semantic,"TEXCOORD"},
+                               {source,"#" ++ Name ++ "-UV"}],[]}];
+                  {0,_} ->
+                      [{input,[{offset,"2"},{semantic,"COLOR"},
+                               {source,"#" ++ Name ++ "-VC"}],[]}];
+                  {_,_} ->
+                      [{input,[{offset,"2"},{semantic,"TEXCOORD"},
+                               {source,"#" ++ Name ++ "-UV"}],[]},
+                       {input,[{offset,"3"},{semantic,"COLOR"},
+                               {source,"#" ++ Name ++ "-VC"}],[]}]
+              end,
     VCount = make_vcount_node(CountPs),
     {polylist,[{count,num_to_text(length(MatFaces))},
-	       {material,Material}],[VInput, NInput, UVInput, VCount, PNode]}.
+	       {material,Material}],flatten([VInput, NInput, UVandVC, VCount, PNode])}.
 
 
 make_floatarray(Name, F, Data) ->
@@ -441,6 +486,14 @@ make_uvsource_accessor(Source, TotalVertCount) ->
     {accessor,[{count,num_to_text(FaceCount)},
 	       {source,"#" ++ Source},{stride,"2"}],[S,T]}.
 
+make_vcsource_accessor(Source, TotalVertCount) ->
+    FaceCount = TotalVertCount div 3,
+    R = {param,[{name,"R"},{type,"float"}],[]},
+    G = {param,[{name,"G"},{type,"float"}],[]},
+    B = {param,[{name,"B"},{type,"float"}],[]},
+    {accessor,[{count,num_to_text(FaceCount)},
+	       {source,"#" ++ Source},{stride,"3"}],[R,B,G]}.
+
 make_source_accessor(Source, TotalVertCount) ->
     FaceCount = TotalVertCount div 3,
     X = {param,[{name,"X"},{type,"float"}],[]},
@@ -449,9 +502,9 @@ make_source_accessor(Source, TotalVertCount) ->
     {accessor,
      [{count,num_to_text(FaceCount)},{source,"#" ++ Source},{stride,"3"}],
      [X,Y,Z]}.
-  
+
 make_asset(Attr) when is_list(Attr) ->
-    Units = proplists:get_value(units, Attr, centimeter),     
+    Units = proplists:get_value(units, Attr, centimeter),
 
     Author = {author,["Wings3D Collada Exporter"]},
     AuthoringTool = {authoring_tool,
