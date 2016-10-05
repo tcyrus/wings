@@ -190,13 +190,13 @@ init([Frame, _Ps, SS]) ->
 		     end,
     wxWindow:connect(LC, command_list_item_selected, [{callback, IgnoreForPopup}]),
     wxWindow:connect(LC, command_list_item_activated),
+    wxWindow:connect(LC, command_list_item_right_click),
     case os:type() of
 	{win32,nt} ->
 	    %% list_item_right_click does not work outside of items
-	    %% on windows use this instead
-	    wxWindow:connect(LC, command_right_click);
+	    %% on windows catch right_up
+	    wxWindow:connect(LC, right_up);
 	_ ->
-	    wxWindow:connect(LC, command_list_item_right_click),
 	    ok
     end,
     wxWindow:connect(LC, command_list_end_label_edit),
@@ -240,7 +240,7 @@ handle_event(#wx{event=#wxList{type=command_list_item_selected, itemIndex=Sel}},
     end,
     {noreply, State#state{sel=Sel}};
 
-handle_event(#wx{event=#wxCommand{type=command_right_click}}, State) ->
+handle_event(#wx{event=#wxMouse{type=right_up}}, State) ->
     invoke_menu(State),
     {noreply, State};
 handle_event(#wx{event=#wxList{type=command_list_item_right_click}}, State) ->
@@ -261,7 +261,8 @@ handle_call(_Req, _From, State) ->
     %% io:format("~p:~p Got unexpected call ~p~n", [?WIN_NAME,?LINE, Req]),
     {reply, ok, State}.
 
-handle_cast({new_state, {#{ssels:=New} = SS, Reset}}, #state{lc=LC, ss=Old, shown=OS}=State) ->
+handle_cast({new_state, {#{ssels:=New} = SS, Reset}},
+            #state{lc=LC, ss=Old, shown=OS, sel=OldSel}=State) ->
     Shown = update_sels(New, Old, OS, LC),
     case SS of
 	#{sh:=false, mode:=Mode} ->
@@ -276,7 +277,13 @@ handle_cast({new_state, {#{ssels:=New} = SS, Reset}}, #state{lc=LC, ss=Old, show
 	    reset_selection(Reset, LC),
 	    ignore
     end,
-    {noreply, State#state{lc=LC, shown=Shown, ss=SS}};
+    Sel = case Shown of
+              OS -> OldSel;
+              _  -> %% Groups have been deleted or added
+                  reset_selection(true, LC),
+                  none
+          end,
+    {noreply, State#state{lc=LC, shown=Shown, ss=SS, sel=Sel}};
 handle_cast(_Req, State) ->
     %% io:format("~p:~p Got unexpected cast ~p~n", [?WIN_NAME,?LINE, _Req]),
     {noreply, State}.
