@@ -510,9 +510,12 @@ misc_prefs() ->
 		      ?__(27,"Problem occurs on linux")}
 		    ])},
 	separator,
-	{hframe,[{label,?__(23,"Edge offsets:")},
-		 {text,polygon_offset_f,[{range,{1.0,100.0}}]},
-		 {text,polygon_offset_r,[{range,{1.0,100.0}}]}],
+	{vframe, [{hframe,[{label,?__(23,"Face & Edge offsets:")},
+                           {text,polygon_offset_f,[{range,{1.0,100.0}}]},
+                           {text,polygon_offset_r,[{range,{1.0,100.0}}]}]},
+                  {?__(31,"Disable Edge Offsets"),edge_offset_disable,
+                   [{info,?__(32,"Solves edge problem on Mac OS X with some Intel Graphics Cards")}]}
+                 ],
 	 [{title,?__(22,"Edge display problems?")}]}],
        [{title,?__(21,"Workarounds")}]},
       {vframe,
@@ -613,6 +616,8 @@ smart_set_value_1(Key, Val, St) ->
 		    erase(polygon_offset);
 		polygon_offset_r ->
 		    erase(polygon_offset);
+                edge_offset_disable ->
+                    erase(polygon_offset);
 		normal_vector_size ->
 		    update_normal_dlist(St);
 		normal_vector_color ->

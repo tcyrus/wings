@@ -242,7 +242,7 @@ draw_1(#dlo{proxy_data=#sp{src_we=We}} = D, Dl, Wire,
     gl:shadeModel(?GL_SMOOTH),
     wings_render:enable_lighting(SceneLights),
     gl:enable(?GL_POLYGON_OFFSET_FILL),
-    wings_render:polygonOffset(2),
+    wings_render:polygonOffset(face, 3.0),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
     case wings_gl:is_ext('GL_ARB_imaging') of
 	false -> ok;
@@ -290,7 +290,7 @@ draw_edges_1(#dlo{edges=Edges}, cage) ->
     gl:lineWidth(1.0),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_LINE),
     gl:enable(?GL_POLYGON_OFFSET_LINE),
-    wings_render:polygonOffset(1),
+    wings_render:polygonOffset(edge, 1.0),
     gl:disable(?GL_CULL_FACE),
     wings_dl:call(Edges),
     gl:enable(?GL_CULL_FACE);

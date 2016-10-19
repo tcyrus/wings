@@ -420,6 +420,7 @@ defaults() ->
      {dummy_axis_letter,false},
      {polygon_offset_f,1.0},
      {polygon_offset_r,1.0},
+     {edge_offset_disable, false},
      {multisample, true},
      {ungrab_bug, false},
 

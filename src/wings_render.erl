@@ -14,7 +14,7 @@
 
 -module(wings_render).
 -export([init/0,
-	 render/1,polygonOffset/1,
+	 render/1,polygonOffset/2,
 	 enable_lighting/1,disable_lighting/0]).
 
 -define(NEED_OPENGL, 1).
@@ -56,14 +56,17 @@ render(#st{selmode=Mode}=St) ->
     gl:popAttrib(),
     wings_develop:gl_error_check("Rendering scene").
 
-polygonOffset(M) ->
+polygonOffset(Type, M) ->
     case get(polygon_offset) of
 	undefined ->
 	    F = wings_pref:get_value(polygon_offset_f,1.0),
 	    R = wings_pref:get_value(polygon_offset_r,1.0),
-	    put(polygon_offset, {F,R}),
+            E = wings_pref:get_value(edge_offset_disable, false),
+	    put(polygon_offset, {F,R,E}),
 	    gl:polygonOffset(M*F, M*R);
-	{F,R} ->
+        {_,_,true} when Type =:= edge ->
+            gl:polygonOffset(0, 0);
+        {F,R,_} ->
 	    gl:polygonOffset(M*F, M*R)
     end.
 
@@ -157,7 +160,7 @@ render_plain(#dlo{work=Faces,edges=Edges,open=Open,
 	false ->
 	    gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
 	    gl:enable(?GL_POLYGON_OFFSET_FILL),
-	    polygonOffset(2),
+	    polygonOffset(face, 3.0),
 	    gl:shadeModel(?GL_SMOOTH),
 	    enable_lighting(SceneLights),
 	    case wings_pref:get_value(show_backfaces) of
@@ -197,7 +200,7 @@ render_plain(#dlo{work=Faces,edges=Edges,open=Open,
 	    gl:lineWidth(edge_width(SelMode)),
 	    gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_LINE),
 	    gl:enable(?GL_POLYGON_OFFSET_LINE),
-	    polygonOffset(1),
+	    polygonOffset(edge, 1.0),
 	    case Wire andalso wings_wm:get_prop(show_wire_backfaces) of
 		true ->
 		    gl:disable(?GL_CULL_FACE),
@@ -240,7 +243,7 @@ render_smooth(#dlo{work=Work,edges=Edges,smooth=Smooth0,transparent=Trans0,
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
     enable_lighting(SceneLights),
     gl:enable(?GL_POLYGON_OFFSET_FILL),
-    gl:polygonOffset(2.0, 2.0),
+    polygonOffset(face, 3.0),
 
     case Proxy of
 	true ->
@@ -288,7 +291,7 @@ render_smooth(#dlo{work=Work,edges=Edges,smooth=Smooth0,transparent=Trans0,
 	    gl:lineWidth(1.0),
 	    gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_LINE),
 	    gl:enable(?GL_POLYGON_OFFSET_LINE),
-	    gl:polygonOffset(1.0, 1.0),
+	    polygonOffset(edge, 1.0),
 	    wings_dl:call(Edges);
 	true ->
 	    wings_proxy:draw_smooth_edges(D);
@@ -316,11 +319,12 @@ draw_sel(#dlo{open=Open,sel=SelDlist}) ->
     sel_color(),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
     gl:enable(?GL_POLYGON_OFFSET_FILL),
-    gl:polygonOffset(1.0, 1.0),
+    polygonOffset(face, 2.0),
     %Stippled selection style.
     gl:enable(?GL_POLYGON_STIPPLE),
     draw_face_sel(Open, SelDlist),
-    gl:disable(?GL_POLYGON_STIPPLE).
+    gl:disable(?GL_POLYGON_STIPPLE),
+    gl:disable(?GL_POLYGON_OFFSET_FILL).
 
 draw_face_sel(true, SelDlist) ->
     case wings_pref:get_value(show_backfaces) of
@@ -373,9 +377,11 @@ draw_orig_sel_1(_, DlistSel) ->
     gl:blendFunc(?GL_SRC_ALPHA, ?GL_ONE_MINUS_SRC_ALPHA),
     {R0,G0,B0} = wings_pref:get_value(selected_color),
     gl:color4f(R0, G0, B0, 0.5),
-    gl:polygonOffset(1.0, 1.0),
+    gl:enable(?GL_POLYGON_OFFSET_FILL),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
-    wings_dl:call(DlistSel).
+    polygonOffset(face, 2.0),
+    wings_dl:call(DlistSel),
+    gl:disable(?GL_POLYGON_OFFSET_FILL).
 
 draw_hard_edges(#dlo{hard=none}, _) -> ok;
 draw_hard_edges(#dlo{hard=Hard}, SelMode) ->
