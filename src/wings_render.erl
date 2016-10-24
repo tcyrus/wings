@@ -49,7 +49,7 @@ render(#st{selmode=Mode}=St) ->
     show_saved_bb(St),
     show_bb_center(St),
     user_clipping_planes(on),
-    render_objects(Mode, SceneLights),
+    render_objects(Mode, PM, SceneLights),
     user_clipping_planes(off),
     axis_letters(PM,MM,Yon),
     show_camera_image_plane(),
@@ -98,62 +98,62 @@ init_polygon_stipple() ->
 	 16#DD,16#DD,16#DD,16#DD,16#77,16#77,16#77,16#77>>,
     gl:polygonStipple(P).
 
-render_objects(Mode, SceneLights) ->
+render_objects(Mode, PM, SceneLights) ->
     Dls = wings_dl:display_lists(),
     case wings_wm:get_prop(workmode) of
 	false ->
-	    render_smooth_objects(Dls, Mode, false, SceneLights),
-	    render_smooth_objects(Dls, Mode, true, SceneLights);
+	    render_smooth_objects(Dls, Mode, false, PM, SceneLights),
+	    render_smooth_objects(Dls, Mode, true, PM, SceneLights);
 	true ->
-	    render_work_objects(Dls, Mode, SceneLights)
+	    render_work_objects(Dls, Mode, PM, SceneLights)
     end.
 
-render_smooth_objects([D|Dls], Mode, RenderTrans, SceneLights) ->
-    render_object(D, Mode, false, RenderTrans, SceneLights),
-    render_smooth_objects(Dls, Mode, RenderTrans, SceneLights);
-render_smooth_objects([], _, _, _) -> ok.
+render_smooth_objects([D|Dls], Mode, RenderTrans, PM, SceneLights) ->
+    render_object(D, Mode, false, RenderTrans, PM, SceneLights),
+    render_smooth_objects(Dls, Mode, RenderTrans, PM, SceneLights);
+render_smooth_objects([], _, _, _, _) -> ok.
 
-render_work_objects([D|Dls], Mode, SceneLights) ->
-    render_object(D, Mode, true, false, SceneLights),
-    render_work_objects(Dls, Mode, SceneLights);
-render_work_objects([], _, _) -> ok.
+render_work_objects([D|Dls], Mode, PM, SceneLights) ->
+    render_object(D, Mode, true, false, PM, SceneLights),
+    render_work_objects(Dls, Mode, PM, SceneLights);
+render_work_objects([], _, _, _) -> ok.
 
-render_object(#dlo{drag={matrix,_,_,Matrix}}=D, Mode, Work, RT, SceneLights) ->
+render_object(#dlo{drag={matrix,_,_,Matrix}}=D, Mode, Work, RT, PM, SceneLights) ->
     gl:pushMatrix(),
     gl:multMatrixf(Matrix),
-    render_object_1(D, Mode, Work, RT, SceneLights),
+    render_object_1(D, Mode, Work, RT, PM, SceneLights),
     gl:popMatrix();
-render_object(D, Mode, Work, RT, SceneLights) ->
-    render_object_1(D, Mode, Work, RT, SceneLights).
+render_object(D, Mode, Work, RT, PM, SceneLights) ->
+    render_object_1(D, Mode, Work, RT, PM, SceneLights).
 
-render_object_1(#dlo{mirror=none}=D, Mode, Work, RenderTrans, SceneLights) ->
-    render_object_2(D, Mode, Work, RenderTrans, SceneLights);
-render_object_1(#dlo{mirror=Matrix}=D, Mode, Work, RenderTrans, SceneLights) ->
-    render_object_2(D, Mode, Work, RenderTrans, SceneLights),
+render_object_1(#dlo{mirror=none}=D, Mode, Work, RenderTrans, PM, SceneLights) ->
+    render_object_2(D, Mode, Work, RenderTrans, PM, SceneLights);
+render_object_1(#dlo{mirror=Matrix}=D, Mode, Work, RenderTrans, PM, SceneLights) ->
+    render_object_2(D, Mode, Work, RenderTrans, PM, SceneLights),
     gl:frontFace(?GL_CW),
     gl:pushMatrix(),
     gl:multMatrixf(Matrix),
-    render_object_2(D, Mode, Work, RenderTrans, SceneLights),
+    render_object_2(D, Mode, Work, RenderTrans, PM, SceneLights),
     gl:popMatrix(),
     gl:frontFace(?GL_CCW).
 
-render_object_2(#dlo{src_we=We}=D, _, _, false, _) when ?IS_LIGHT(We) ->
+render_object_2(#dlo{src_we=We}=D, _, _, false, _, _) when ?IS_LIGHT(We) ->
     wings_light:render(D);
-render_object_2(#dlo{src_we=We}, _, _, true, _) when ?IS_LIGHT(We) ->
+render_object_2(#dlo{src_we=We}, _, _, true, _, _) when ?IS_LIGHT(We) ->
     ok;
-render_object_2(D, Mode, true, _, SceneLights) ->
-    render_plain(D, Mode, SceneLights);
-render_object_2(#dlo{transparent=true}=D, _, false, false, SceneLights) ->
+render_object_2(D, Mode, true, _, PM, SceneLights) ->
+    render_plain(D, Mode, PM, SceneLights);
+render_object_2(#dlo{transparent=true}=D, _, false, false, PM, SceneLights) ->
     gl:disable(?GL_CULL_FACE),
-    render_smooth(D, false, SceneLights),
+    render_smooth(D, false, PM, SceneLights),
     gl:enable(?GL_CULL_FACE);
-render_object_2(#dlo{transparent=true}=D, _, false, true, SceneLights) ->
-    render_smooth(D, true, SceneLights);
-render_object_2(#dlo{transparent=false}=D, _, false, RenderTrans, SceneLights) ->
-    render_smooth(D, RenderTrans, SceneLights).
+render_object_2(#dlo{transparent=true}=D, _, false, true, PM, SceneLights) ->
+    render_smooth(D, true, PM, SceneLights);
+render_object_2(#dlo{transparent=false}=D, _, false, RenderTrans, PM, SceneLights) ->
+    render_smooth(D, RenderTrans, PM, SceneLights).
 
 render_plain(#dlo{work=Faces,edges=Edges,open=Open,
-		  src_we=We,proxy=false}=D, SelMode, SceneLights) ->
+		  src_we=We,proxy=false}=D, SelMode, PM, SceneLights) ->
     %% Draw faces for winged-edge-objects.
     Wire = wire(We),
     case Wire of
@@ -210,17 +210,23 @@ render_plain(#dlo{work=Faces,edges=Edges,open=Open,
 		    wings_dl:call(Edges)
 	    end
     end,
-    render_plain_rest(D, Wire, SelMode);
-render_plain(#dlo{src_we=We}=D, SelMode, SceneLights) ->
+    render_plain_rest(D, Wire, SelMode, PM);
+render_plain(#dlo{src_we=We}=D, SelMode, PM, SceneLights) ->
     Wire = wire(We),
     wings_proxy:draw(D, Wire, SceneLights),
-    render_plain_rest(D, Wire, SelMode).
+    render_plain_rest(D, Wire, SelMode, PM).
 
-render_plain_rest(#dlo{}=D, Wire, SelMode) ->
+render_plain_rest(#dlo{}=D, Wire, SelMode, PM) ->
     gl:disable(?GL_POLYGON_OFFSET_LINE),
     gl:disable(?GL_POLYGON_OFFSET_FILL),
 
+    gl:matrixMode(?GL_PROJECTION),
+    gl:pushMatrix(),
+    non_polygon_offset_test(1.0, PM),
     draw_hilite(D),
+    draw_vertices(D, SelMode),
+    draw_hard_edges(D, SelMode),
+    draw_normals(D),
     case Wire of
 	true ->
 	    gl:disable(?GL_CULL_FACE),
@@ -231,14 +237,13 @@ render_plain_rest(#dlo{}=D, Wire, SelMode) ->
 	    draw_sel(D),
 	    draw_orig_sel(D)
     end,
-    draw_vertices(D, SelMode),
-    draw_hard_edges(D, SelMode),
-    draw_normals(D),
+    gl:popMatrix(),
+    gl:matrixMode(?GL_MODELVIEW),
     draw_plugins(plain,D,SelMode). %% arbitrary placement in the grand scheme of things
 
 render_smooth(#dlo{work=Work,edges=Edges,smooth=Smooth0,transparent=Trans0,
 		   src_we=We,proxy=Proxy,proxy_data=PD,open=Open}=D,
-	      RenderTrans, SceneLights) ->
+	      RenderTrans, PM, SceneLights) ->
     gl:shadeModel(?GL_SMOOTH),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
     enable_lighting(SceneLights),
@@ -297,9 +302,14 @@ render_smooth(#dlo{work=Work,edges=Edges,smooth=Smooth0,transparent=Trans0,
 	    wings_proxy:draw_smooth_edges(D);
 	false -> ok
     end,
+    gl:matrixMode(?GL_PROJECTION),
+    gl:pushMatrix(),
+    non_polygon_offset_test(5.0, PM),
     draw_hilite(D),
     draw_sel(D),
     draw_orig_sel(D),
+    gl:popMatrix(),
+    gl:matrixMode(?GL_MODELVIEW),
     draw_plugins(smooth,D,none).
 
 wire(#we{id=Id}) ->
@@ -349,7 +359,7 @@ draw_vertices(#dlo{src_we=#we{perm=P},vs=VsDlist}, vertex) when ?IS_SELECTABLE(P
     wings_dl:call(VsDlist);
 draw_vertices(_, _) -> ok.
 
-draw_hilite(#dlo{hilite=DL}) -> 
+draw_hilite(#dlo{hilite=DL}) ->
     wings_dl:call(DL).
 
 draw_orig_sel(#dlo{orig_sel=none}) -> ok;
@@ -880,3 +890,35 @@ draw_clip_disk(Direction, Expand) ->
     gl:popMatrix(),
     glu:deleteQuadric(Obj).
 
+
+%% According Game Programming Gems chap 4.1 (By Eric Lengyel)
+%% http://www.terathon.com/books/code/Listing9.1.txt
+%% http://terathon.com/gdc07_lengyel.pdf
+
+non_polygon_offset_test(Zp, TPM) ->
+    #view{hither=N,yon=F} = wings_view:current(),
+    [M|_] = gl:getIntegerv(?GL_DEPTH_BITS),
+    %% Calc values according to book
+    Delta = calc_delta_value(Zp, N, F, M),
+    Eps = calc_eps_value(Delta*1.1, Zp, N, F),
+    io:format("Zp ~p M ~p => Delta ~p => Eps ~p~n", [Zp, M, Delta, Eps]),
+    %%PM = non_polygon_offset(1.0 + Eps, e3d_transform:matrix(TPM)),
+    %% Or Use the min value directly as specified by (for 24 bits z-buffer)
+    PM = non_polygon_offset(1.0 - 4.8e-7, e3d_transform:matrix(TPM)),
+    gl:loadMatrixd(PM).
+
+non_polygon_offset(Eps, ProjMat) ->
+    %% Modify entry {3,3}
+    E33 = element(11, ProjMat),
+    io:format("M33 ~p => ~p~n",[E33, E33*Eps]),
+    setelement(11, ProjMat, E33*Eps).
+
+%% calc_delta_value(Near, Far, M is depth buffer bits) -> minDelta
+%% as in Game Programming Gems chap 4.1 (By Eric Lengyel)
+calc_delta_value(ZPush, N, F, M) ->
+    K = (F - N) / (2.0*F*N*((1 bsl M)-1.0)),
+    KZ = (K*ZPush),
+    KZ*ZPush/(1.0-KZ).
+
+calc_eps_value(Delta, Zpush, Near, Far) ->
+   (-2.0*Far*Near*Delta) / ((Far+Near) * Zpush * (Zpush + Delta)).
