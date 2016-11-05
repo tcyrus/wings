@@ -1862,13 +1862,9 @@ draw_background(#st{bb=#uvstate{matname=MatName,st=St,bg_img=Image}}) ->
     gl:lineWidth(1.0),
     gl:color3f(0.0, 0.0, 0.7),
     gl:translatef(0.0, 0.0, -0.5),
-    gl:'begin'(?GL_LINES),
-    G = fun(V) ->
-		gl:vertex2f(V,20.0),  gl:vertex2f(V,-20.0),
-		gl:vertex2f(20.0,V),  gl:vertex2f(-20.0,V)
-	end,
-    lists:foreach(G, lists:seq(-20,20)),
-    gl:'end'(),
+    Bin = << <<V:?F32,20.0:?F32, V:?F32,-20:?F32, 20.0:?F32,V:?F32, -20.0:?F32,V:?F32>>
+             || V <- lists:seq(-20,20) >>,
+    wings_vbo:draw(fun() -> gl:drawArrays(?GL_LINES, 0, 4*(20+20+1)) end, Bin, [vertex2d]),
     gl:lineWidth(3.0),
     gl:color3f(0.0, 0.0, 1.0),
     gl:recti(0, 0, 1, 1),
@@ -1878,7 +1874,7 @@ draw_background(#st{bb=#uvstate{matname=MatName,st=St,bg_img=Image}}) ->
     gl:color3f(1.0, 1.0, 1.0),			%Clear
     case get({?MODULE,show_background}) of
 	false -> ok;
-	_ -> 
+	_ ->
 	    Tx = case get_texture(MatName,St) of
 		     false -> wings_image:txid(Image);
 		     DiffId -> wings_image:txid(DiffId)
@@ -1886,12 +1882,10 @@ draw_background(#st{bb=#uvstate{matname=MatName,st=St,bg_img=Image}}) ->
 	    gl:enable(?GL_TEXTURE_2D),
 	    gl:bindTexture(?GL_TEXTURE_2D, Tx)
     end,
-    gl:'begin'(?GL_QUADS),
-    gl:texCoord2f(0.0, 0.0),    gl:vertex3f(0.0, 0.0, -0.99999),
-    gl:texCoord2f(1.0, 0.0),    gl:vertex3f(1.0, 0.0, -0.99999),
-    gl:texCoord2f(1.0, 1.0),    gl:vertex3f(1.0, 1.0, -0.99999),
-    gl:texCoord2f(0.0, 1.0),    gl:vertex3f(0.0, 1.0, -0.99999),
-    gl:'end'(), 
+    Q = [{0.0, 0.0},{0.0, 0.0, -0.99999}, {1.0, 0.0},{1.0, 0.0, -0.99999},
+         {1.0, 1.0},{1.0, 1.0, -0.99999}, {0.0, 1.0},{0.0, 1.0, -0.99999}],
+    wings_vbo:draw(fun() -> gl:drawArrays(?GL_QUADS, 0, 4) end, Q, [uv, vertex]),
+
     gl:disable(?GL_TEXTURE_2D),
 
     gl:popAttrib().
