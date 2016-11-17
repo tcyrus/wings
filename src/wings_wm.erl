@@ -626,6 +626,8 @@ event_loop() ->
     end.
 
 get_and_dispatch() ->
+    %% Sync with wx-driver
+    gl:finish(),  _ = wxWindow:getSize(?GET(top_frame)),
     Event = wings_io:get_event(),
     dispatch_event(Event),
     event_loop().
