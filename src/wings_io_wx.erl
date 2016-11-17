@@ -277,6 +277,8 @@ read_events(Eq0, Prev, Wait) ->
 		{X,Y} ->
                     erase(mouse_warp),
                     read_events(Eq0, Prev, Wait);
+		_ when is_integer(Wait) ->
+                    read_events(Eq0, Ev, min(25,Wait+1));
                 _ ->
                     read_events(Eq0, Ev, 5)
 	    end;
