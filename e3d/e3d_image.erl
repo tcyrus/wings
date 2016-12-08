@@ -166,8 +166,8 @@ bytes_pp(#e3d_image{bytes_pp = Bpp}) ->
 %% Rets: {#e3d_image,[{MM_Lev,W,H,Bin}]}  | {error, Reason}
 %% Desc: Filter and build a normalmap from a heightmap.
 %%       assumes the heightmap is greyscale.
-height2normal(Image, Scale, GenMipMap) ->
-    NM  = height2normal(Image, {Scale,false,false}),
+height2normal(Image, Options, GenMipMap) ->
+    NM  = height2normal(Image, Options),
     MMs = case GenMipMap of
 	      true -> buildNormalMipmaps(NM);
 	      false -> []
@@ -175,43 +175,46 @@ height2normal(Image, Scale, GenMipMap) ->
     {NM, MMs}.
 
 %% Func: height2normal(Image, Params)
-%% Args: Image = #e3d_image, Params = {number,boolean,boolean}
+%% Args: Image = #e3d_image, Params = #{scale::float(), inv_x::boolean(), inv_y::boolean()}
 %% Rets: #e3d_image | {error, Reason}
 %% Desc: Filter and build a normalmap from a heightmap.
 %%       the heightmap can be a greyscale or colored image.
-height2normal(Old, Params) ->
+height2normal(Old, Opts) ->
+    InvX = maps:get(inv_x, Opts, false),
+    InvY = maps:get(inv_y, Opts, false),
+    Scale  = maps:get(scale, Opts, 4.0),
+    ScaleXY = {Scale*inv_multiply(InvX), Scale*inv_multiply(InvY)},
     #e3d_image{width=W,height=H,image=I,name=Name} = e3d_image:convert(Old, g8, 1),
-    New = bumps(H, W, I, Params),
+    New = bumps(H, W, I, ScaleXY),
     Old#e3d_image{bytes_pp=3,type=r8g8b8, image=New, alignment=1,
 		  filename=none, name=Name++"_normal"}.
 
-bumps(Rows, Cols, Bin, {Scale,InvX,InvY}) ->
-    Params = {Scale*inv_multiply(InvX), Scale*inv_multiply(InvY)},
+bumps(Rows, Cols, Bin, Scale) ->
     Offset = (Rows-2)*Cols,
     <<RowFirst:Cols/binary, Bin0/binary>> = Bin,
     <<_:Offset/binary,RowLast/binary>> = Bin0,
-    bumps_0(Cols, <<RowLast/binary,Bin/binary,RowFirst/binary>>, Params, <<>>).
+    bumps_0(Cols, <<RowLast/binary,Bin/binary,RowFirst/binary>>, Scale, <<>>).
 
 bumps_0(Cols, Bin0, _, Acc) when size(Bin0) =:= Cols*2 -> Acc;
-bumps_0(Cols, Bin0, Params, Acc) ->
+bumps_0(Cols, Bin0, Scale, Acc) ->
     Offset = Cols -2,
     <<RowUp:Cols/binary,Bin/binary>> = Bin0,
     <<Row:Cols/binary,RowDown:Cols/binary,_/binary>> = Bin,
     <<Ci,_:Offset/binary,Cf>> = Row,
-    Acc0 = bumpmapRow(<<Cf,Row/binary,Ci>>, RowUp, RowDown, Params, <<>>),
-    bumps_0(Cols, Bin, Params, <<Acc/binary,Acc0/binary>>).
+    Acc0 = bumpmapRow(<<Cf,Row/binary,Ci>>, RowUp, RowDown, Scale, <<>>),
+    bumps_0(Cols, Bin, Scale, <<Acc/binary,Acc0/binary>>).
 
-bumpmapRow(<<Cl,Row/binary>>, <<Ru,RowUp/binary>>, <<Rd,RowDown/binary>>, Params, Acc) ->
+bumpmapRow(<<Cl,Row/binary>>, <<Ru,RowUp/binary>>, <<Rd,RowDown/binary>>, Scale, Acc) ->
     <<_, Cr, _/binary>> = Row,
-    {R,G,B} = bumpmapRGB(Cl, Cr, Ru, Rd, Params),
-    bumpmapRow(Row, RowUp, RowDown, Params, <<Acc/binary, R:8, G:8, B:8>>);
+    {R,G,B} = bumpmapRGB(Cl, Cr, Ru, Rd, Scale),
+    bumpmapRow(Row, RowUp, RowDown, Scale, <<Acc/binary, R:8, G:8, B:8>>);
 bumpmapRow(_, <<>>, <<>>, _, NormalRow) -> NormalRow.
 
 bumpmapRGB(Cl, Cr, Ru, Rd, {MulX,MulY}) ->
     Z1 = (Cr-Cl)*-1.0*MulX,
     Z2 = (Ru-Rd)*MulY,
-    {Nr,Ng,Nb} =e3d_vec:norm({Z1, Z2, 255.0}),
-    {R0,G0,B0} = {(Nr+1)/2.0,(Ng+1)/2.0,(Nb+1)/2.0},
+    {Nr,Ng,Nb} = e3d_vec:norm({Z1, Z2, 255.0}),
+    {R0,G0,B0} = {(Nr+1)*0.5,(Ng+1)*0.5,(Nb+1)*0.5},
     {round(R0 *255), round(G0 *255), round(B0 *255)}.
 
 inv_multiply(true) -> -1.0;

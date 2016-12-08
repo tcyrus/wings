@@ -746,16 +746,16 @@ tx_cmd(Type, Id, Mat) ->
 
 create_normal_map({ask,Id}) ->
     wings_dialog:dialog(?__(1,"Normalmap"),
-		     [{label_column, [{?__(2,"Bumpiness"), {text, 4.0, [{key,scale}, {range,{0.1,100.0}}]}}]},
-		      {?__(3,"Invert X"), false, [{key,invx}]},
-		      {?__(4,"Invert Y"), false, [{key,invy}]}],
-		     fun(Res) ->
-			 [{scale,Scale},{invx,InvX},{invy,InvY}] = Res,
-			 create_normal_map_0(Id, {Scale,InvX,InvY}),
-			 keep
-		     end);
+                        [{label_column, [{?__(2,"Bumpiness"), {text, 4.0, [{key,scale}, {range,{0.1,100.0}}]}}]},
+                         {?__(3,"Invert X"), false, [{key,invx}]},
+                         {?__(4,"Invert Y"), false, [{key,invy}]}],
+                        fun(Res) ->
+                                [{scale,Scale},{invx,InvX},{invy,InvY}] = Res,
+                                create_normal_map_0(Id, #{scale=>Scale,inv_x=>InvX,inv_y=>InvY}),
+                                keep
+                        end);
 create_normal_map(Id) ->
-    create_normal_map_0(Id, {4.0,1.0,1.0}).
+    create_normal_map_0(Id, #{}).
 
 create_normal_map_0(Id, Params) ->
     SrcIm = wings_image:info(Id),
