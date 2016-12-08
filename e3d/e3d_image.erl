@@ -186,7 +186,7 @@ height2normal(Old, Params) ->
 		  filename=none, name=Name++"_normal"}.
 
 bumps(Rows, Cols, Bin, {Scale,InvX,InvY}) ->
-    Params = {Scale, inv_multiply(InvX), inv_multiply(InvY)},
+    Params = {Scale*inv_multiply(InvX), Scale*inv_multiply(InvY)},
     Offset = (Rows-2)*Cols,
     <<RowFirst:Cols/binary, Bin0/binary>> = Bin,
     <<_:Offset/binary,RowLast/binary>> = Bin0,
@@ -207,9 +207,9 @@ bumpmapRow(<<Cl,Row/binary>>, <<Ru,RowUp/binary>>, <<Rd,RowDown/binary>>, Params
     bumpmapRow(Row, RowUp, RowDown, Params, <<Acc/binary, R:8, G:8, B:8>>);
 bumpmapRow(_, <<>>, <<>>, _, NormalRow) -> NormalRow.
 
-bumpmapRGB(Cl, Cr, Ru, Rd, {Scale,MulX,MulY}) ->
-    Z1 = (Cr-Cl)*-1.0*MulX*Scale,
-    Z2 = (Ru-Rd)*MulY*Scale,
+bumpmapRGB(Cl, Cr, Ru, Rd, {MulX,MulY}) ->
+    Z1 = (Cr-Cl)*-1.0*MulX,
+    Z2 = (Ru-Rd)*MulY,
     {Nr,Ng,Nb} =e3d_vec:norm({Z1, Z2, 255.0}),
     {R0,G0,B0} = {(Nr+1)/2.0,(Ng+1)/2.0,(Nb+1)/2.0},
     {round(R0 *255), round(G0 *255), round(B0 *255)}.
