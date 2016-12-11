@@ -29,7 +29,7 @@
 
 -export([from_list/1, to_list/1,
  	 empty/0,is_empty/1,is_kd3/1,size/1,
- 	 enter/3,
+ 	 enter/3, update/3,
 	 delete/2, delete_object/2,
 	 nearest/2, take_nearest/2,
 	 fold/5
@@ -157,6 +157,28 @@ from_list(Data, _) -> Data.
 enter(Point, Data, #e3d_kd3{tree=Tree0}) ->
     Tree = add_1({Data, Point}, Tree0),
     #e3d_kd3{tree=Tree}.
+
+%%% @doc Updates the Object with Term from Tree1 and returns the new Tree2
+%%% crashes if object is not present.
+-spec update(kd3_object(), term(), e3d_kd3()) -> e3d_kd3().
+update({_,{_,_,_}} = Object, Val, _T=#e3d_kd3{tree=Tree}) ->
+    #e3d_kd3{tree=update_1(Object, Val, Tree)}.
+
+update_1({_,Key}=Object,Val,{Med, Axis, L0, R0}) ->
+    case Med < element(Axis, Key)  of
+	true ->
+	    R = update_1(Object, Val, R0),
+	    delete_object_2(Med, Axis, L0, R);
+	false ->
+	    L = update_1(Object, Val, L0),
+	    delete_object_2(Med, Axis, L, R0)
+    end;
+update_1(Object, Val, Leaf) ->
+    update_3(Object, Leaf, Val, []).
+
+update_3({_,Pos}=Object, [Object|R], Val, Acc) -> Acc ++ [{Val,Pos}|R];
+update_3(Object, [H|T], Val, Acc) ->
+    update_3(Object, T, Val, [H|Acc]).
 
 %%% @doc  Return all nodes in the tree.
 -spec to_list(e3d_kd3()) -> [kd3_object()].

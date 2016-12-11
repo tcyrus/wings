@@ -67,10 +67,10 @@ merge(EdgeInfo, #{id:=Id1,fs:=Fs1,we:=We1}=I1, #{id:=Id2,fs:=Fs2,we:=We2}=I2) ->
     ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo],
     %?dbg("~p~n",[ReEI0]),
     {Vmap, ReEI} = make_vmap(ReEI0, We1, We2),
-    ?dbg("~p~n",[Vmap]),
-    ?dbg("~p~n",[ReEI]),
+    %?dbg("~p~n",[Vmap]),
+    %?dbg("~p~n",[ReEI]),
     Loops0 = build_vtx_loops(ReEI, []),
-    ?dbg("~p~n",[Loops0]),
+    %?dbg("~p~n",[Loops0]),
     L10 = [split_loop(Loop, Vmap, {We1,We2}) || Loop <- Loops0],
     L20 = [split_loop(Loop, Vmap, {We2,We1}) || Loop <- Loops0],
     Loops = [filter_tri_edges(Loop) || Loop <- lists:zip(L10,L20)],
@@ -95,15 +95,20 @@ cut_edges(SE, Vmap, We0) ->
     ECuts = sofs:to_external(sofs:relation_to_family(sofs:relation(WiEs, [{edge,vn}]))),
     lists:foldl(fun cut_edge/2, {Vmap, We0}, ECuts).
 
-cut_edge({Edge, [V]}, {Vmap, We0}) ->
-    Pos = array:get(V, Vmap),
-    {We, NewV} = wings_edge:fast_cut(Edge, Pos, We0),
-    {array:set(V, NewV, Vmap), We};
+cut_edge({Edge, [V]}, {Vmap, #we{id=Id}=We0}) ->
+    {Where,Pos} = array:get(V, Vmap),
+    case proplists:get_value(Id, Where) of
+        undefined ->
+            {We, NewV} = wings_edge:fast_cut(Edge, Pos, We0),
+            {array:set(V, NewV, Vmap), We};
+        Vi ->
+            {array:set(V, Vi, Vmap), We0}
+    end;
 cut_edge({Edge, Vs}, {Vmap0, #we{es=Etab}=We0}) ->
     #edge{vs=VS,ve=VE} = array:get(Edge, Etab),
     Pt1 = wings_vertex:pos(VS,We0),
     Pt2 = wings_vertex:pos(VE,We0),
-    [{_,Pt3},{_,Pt4}|_] = VsPos0 = [{V,array:get(V, Vmap0)} || V <- Vs],
+    [{_,Pt3},{_,Pt4}|_] = VsPos0 = [{V,vmap_pos(V, Vmap0)} || V <- Vs],
     VsPos = case e3d_vec:dot(e3d_vec:sub(Pt2, Pt1), e3d_vec:sub(Pt4, Pt3)) > 0 of
                 true -> VsPos0;
                 false -> lists:reverse(VsPos0)
@@ -160,9 +165,9 @@ connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Vmap, #we{vp=Vtab}=We) ->
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
     [Face] = [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)],
-    % ?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face, V1,WeV1,I1,V2,WeV2,I2]),
     N = wings_face:normal(Face, We),
     Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
+    ?dbg("~p ~p(~p) ~p(~p) swap ~p~n", [Face, V1,WeV1,V2,WeV2, e3d_vec:dot(e3d_vec:average(N1,N2), Dir)]),
     case 0 >= e3d_vec:dot(e3d_vec:average(N1,N2), Dir) of
         true  -> wings_vertex:force_connect(WeV1,WeV2,Face,We);
         false -> wings_vertex:force_connect(WeV2,WeV1,Face,We)
@@ -172,13 +177,14 @@ connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2},Face,Vmap, #we{vp=Vtab}=We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
-    % ?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face, V1,WeV1,I1,V2,WeV2,I2]),
     case wings_vertex:edge_through(WeV1,WeV2,Face,We) of
         none when N1 =:= ignore ->
+            ?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face,V1,WeV1,N1,V2,WeV2,N2]),
             wings_vertex:force_connect(WeV1,WeV2,Face,We);
         none ->
             N = wings_face:normal(Face, We),
             Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
+            ?dbg("~p ~p(~p) ~p(~p) swap ~p~n", [Face, V1,WeV1,V2,WeV2, e3d_vec:dot(e3d_vec:average(N1,N2), Dir)]),
             case 0 >= e3d_vec:dot(e3d_vec:average(N1,N2), Dir) of
                 true  -> wings_vertex:force_connect(WeV1,WeV2,Face,We);
                 false -> wings_vertex:force_connect(WeV2,WeV1,Face,We)
@@ -197,7 +203,7 @@ make_face_vs(Ss, Vs, Edge, Vmap, #we{es=Etab}=We) ->
     end.
 
 make_face_vs_1([#{op:=split_face,v:=V}|Ss], Edge, Vmap, We0) ->
-    Pos = array:get(V, Vmap),
+    Pos = vmap_pos(V, Vmap),
     {We, New} = wings_edge:fast_cut(Edge, Pos, We0),
     make_face_vs_1(Ss, New, Vmap, We);
 make_face_vs_1([], _, _, We) ->
@@ -217,7 +223,7 @@ split_face(Fs, Vmap, We0) ->
 	true ->
 	    KD3 = e3d_kd3:from_list(Zipped),
 	    {Vs,_} = lists:mapfoldl(fun(#{v:=Vi}, Tree0) ->
-					    Pos = array:get(Vi, Vmap),
+					    Pos = vmap_pos(Vi, Vmap),
 					    {{V,_}, Tree} = e3d_kd3:take_nearest(Pos, Tree0),
 					    {{V,Pos},Tree}
 				    end, KD3, Fs),
@@ -225,7 +231,7 @@ split_face(Fs, Vmap, We0) ->
 			       We1#we.vp, Vs),
             cleanup_edges(FVs, [V||{V,_}<-Vs], Face, We1#we{vp=Vtab});
 	false ->
-	    KD3 = e3d_kd3:from_list([{FS, array:get(Vi, Vmap)} || #{v:=Vi}=FS <- Fs]),
+	    KD3 = e3d_kd3:from_list([{FS, vmap_pos(Vi, Vmap)} || #{v:=Vi}=FS <- Fs]),
 	    {Vs,_} = lists:mapfoldl(fun({V, Old}, Tree0) ->
 					    {{FS,Pos}, Tree} = e3d_kd3:take_nearest(Old, Tree0),
 					    {{V,Pos,FS},Tree}
@@ -272,9 +278,12 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, We0) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}) ->
     Loop = lists:zip(L1,L2),
-    %?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
+    ?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
     lists:unzip(filter_tri_edges_1(Loop)).
 
+filter_tri_edges_1([{#{v:=V}=V1,U1}, {#{v:=V}=V2, U2}|Vs]) ->
+    %% Remove edges to it self (loops)
+    filter_tri_edges_1([{filter_edge(V1,V2),filter_edge(U1,U2)}|Vs]);
 filter_tri_edges_1([{#{op:=split_edge,e:=none},#{op:=split_edge, e:=none}}|Vs]) ->
     filter_tri_edges_1(Vs);
 filter_tri_edges_1([{#{op:=split_edge,e:=none}=V1,#{op:=Op}=V2}|Vs]) ->
@@ -287,9 +296,6 @@ filter_tri_edges_1([{#{op:=Op}=V1,#{op:=split_edge,e:=none}=V2}|Vs]) ->
         split_face -> filter_tri_edges_1(Vs);
         split_edge -> [{V1,edge_to_face(V2)}|filter_tri_edges_1(Vs)]
     end;
-filter_tri_edges_1([{#{v:=V}=V1,U1}, {#{v:=V}=V2, U2}|Vs]) ->
-    %% Remove edges to it self (loops)
-    filter_tri_edges_1([{filter_edge(V1,V2),filter_edge(U1,U2)}|Vs]);
 filter_tri_edges_1([V|Vs]) ->
     [V|filter_tri_edges_1(Vs)];
 filter_tri_edges_1([]) -> [].
@@ -309,22 +315,22 @@ edge_to_face(#{op:=split_edge}=Orig) ->
 build_vtx_loops(Edges, _Acc) ->
     G = make_lookup_table(Edges),
     Comps = digraph_utils:components(G),
-    %%?dbg("Cs: ~p: ~p~n",[G, Comps]),
+    ?dbg("Cs: ~w~n",[Comps]),
     Res = [build_vtx_loop(C, G) || C <- Comps],
+    [] = digraph:edges(G), %% Assert that we have completed all edges
     digraph:delete(G),
     Res.
 
 make_lookup_table(Edges) ->
     G = digraph:new(),
-    Add = fun(#{p1:={_,P1},p2:={_,P2}}=EI) ->
-                  R1 = digraph:add_vertex(G, P1),
-                  R2 = digraph:add_vertex(G, P2),
-                  case R1 =:= P1 orelse
-                      R2 =:= P2  orelse
-                      not edge_exists(G,P1,P2)
-                  of
-                      true -> digraph:add_edge(G, P1, P2, EI);
-                      false -> ok
+    Add = fun(#{p1:={_,V},p2:={_,V}}) ->
+                  ignore; %% Loops
+             (#{p1:={_,P1},p2:={_,P2}}=EI) ->
+                  digraph:add_vertex(G, P1),
+                  digraph:add_vertex(G, P2),
+                  case edge_exists(G,P1,P2) of
+                      false -> R3 = digraph:add_edge(G, P1, P2, EI), ?dbg("~p ~p => ~p~n",[P1,P2,R3]);
+                      true -> ok, ?dbg("~p ~p => ignored ~n",[P1,P2])
                   end
           end,
     _ = [Add(EI) || EI <- Edges],
@@ -333,7 +339,10 @@ make_lookup_table(Edges) ->
 build_vtx_loop([V|_Vs], G) ->
     case build_vtx_loop(V, G, []) of
         {V, Acc} -> Acc;
-        {_, _} -> error(incomplete_edge_loop)
+        {_V, _Acc} ->
+            ?dbg("V ~p => ~p~n",[V,_Acc]),
+            ?dbg("Last ~p~n",[_V]),
+            error(incomplete_edge_loop)
     end.
 
 build_vtx_loop(V0, G, Acc) ->
@@ -341,6 +350,7 @@ build_vtx_loop(V0, G, Acc) ->
         [] -> {V0, Acc};
         Es ->
             {Edge, Next, Ei} = pick_edge(Es, V0, undefined),
+            %?dbg("~p in ~P~n => ~p ~n",[V0, Es, 10, Next]),
             digraph:del_edge(G, Edge),
             build_vtx_loop(Next, G, [Ei,V0|Acc])
     end.
@@ -363,11 +373,11 @@ split_loop([Last|Loop], Vmap, We) ->
     split_loop(Loop, Last, Vmap, We, []).
 
 split_loop([V1,E|Loop], Last, Vmap, We, Acc) when is_integer(V1) ->
-    ?dbg("~p: ~p in ~p~n",[(element(1,We))#we.id,V1,E]),
+%    ?dbg("~p: ~p in ~p~n",[(element(1,We))#we.id,V1,E]),
     Vertex = vertex_info(E, V1, Vmap, We),
     split_loop(Loop, Last, Vmap, We, [Vertex|Acc]);
 split_loop([V1], E, Vmap, We, Acc) ->
-    ?dbg("~p: ~p in ~p~n",[(element(1,We))#we.id,V1,E]),
+%    ?dbg("~p: ~p in ~p~n",[(element(1,We))#we.id,V1,E]),
     Vertex = vertex_info(E, V1, Vmap, We),
     lists:reverse([Vertex|Acc]).
 
@@ -422,8 +432,8 @@ vertex_info(#{mf2:={O1,F1}, mf1:={O2,F2}, other:={O3,F3}, p2:={{_, {A,B}=Edge0},
             check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0}, N, Vmap, We)
     end.
 
-check_if_edge(#{f:=F, v:=V}=SF, N, Vmap, #we{vp=Vtab}=We) ->
-    Pos = array:get(V, Vmap),
+check_if_edge(#{f:=F, v:=V}=SF, N, Vmap, #we{id=Id, vp=Vtab}=We) ->
+    {Where, Pos} = array:get(V, Vmap),
     Find = fun(_,Edge,#edge{vs=V1,ve=V2},Acc) ->
                    V1P = array:get(V1, Vtab),
                    V2P = array:get(V2, Vtab),
@@ -432,9 +442,14 @@ check_if_edge(#{f:=F, v:=V}=SF, N, Vmap, #we{vp=Vtab}=We) ->
                        false -> Acc
                    end
            end,
-    case wings_face:fold(Find, [], F, We) of
-        [] -> SF;
-        [{Vs,Edge}] -> SF#{op:=split_edge, o_n=>N, e=>Edge, vs=>Vs}
+    case proplists:get_value(Id, Where) of
+        undefined ->
+            case wings_face:fold(Find, [], F, We) of
+                [] -> SF;
+                [{Vs,Edge}] -> SF#{op:=split_edge, o_n=>N, e=>Edge, vs=>Vs}
+            end;
+        WeV ->
+            SF#{op:=split_edge, o_n=>N, e=>on_vertex, vs=>WeV}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -449,28 +464,43 @@ make_bvh(_, #we{id=Id, fs=Fs0}=We0, Bvhs) ->
     Bvh = e3d_bvh:init([{array:size(Ts), Get}]),
     [#{id=>Id,map=>Ts,bvh=>Bvh,fs=>[],we=>We0}|Bvhs].
 
-%% BUGBUG: Should we add the We's vertexes here!!
-%% That way we can merge new verts with original Vs directly
-make_vmap(ReEI0, _We1, _We2) ->
-    make_vmap(ReEI0, e3d_kd3:empty(), 0, []).
+make_vmap(ReEI0, #we{id=Id1, vp=Vtab1}, #we{id=Id2, vp=Vtab2}) ->
+    {I0,L1} = lists:foldl(fun({N, Pos}, {I, Acc}) ->
+                                  {I+1, [{{I, [{Id1,N}]}, Pos}|Acc]}
+                          end, {0, []}, array:sparse_to_orddict(Vtab1)),
+    Tree0 = e3d_kd3:from_list(L1),
+    {I1,Tree1} = add_vtab(Vtab2, I0, Id2, Tree0),
+    make_vmap(ReEI0, Tree1, I1, []).
+
+add_vtab(Vtab, I0, Id, Tree) ->
+    Add = fun(N, Pos, {I,Acc}) ->
+                  {{IF,V1},P1} = Obj = e3d_kd3:nearest(Pos, Acc),
+                  New = {Id,N},
+                  case e3d_vec:dist_sqr(Pos, P1) < ?EPSILON of
+                      true  -> {I, e3d_kd3:update(Obj, {IF,[New|V1]}, Acc)};
+                      false -> {I+1, e3d_kd3:enter(Pos, {I, [New]}, Acc)}
+                  end
+          end,
+    array:foldl(Add, {I0,Tree}, Vtab).
 
 make_vmap([#{p1:=P10, p2:=P20}=E|R], T0, N0, Acc) ->
     {P1, N1, T1} = vmap(P10, N0, T0),
     {P2, N2, T2} = vmap(P20, N1, T1),
     make_vmap(R, T2, N2, [E#{p1:=P1,p2:=P2}|Acc]);
 make_vmap([], T, _, Acc) ->
-    {array:from_orddict(lists:sort(e3d_kd3:to_list(T))), Acc}.
+    OrdD = [{N,{Where,Pos}} || {{N, Where}, Pos} <- lists:sort(e3d_kd3:to_list(T))],
+    {array:from_orddict(OrdD), Acc}.
 
 vmap({Where, Pos}, N, Tree) ->
-    case e3d_kd3:is_empty(Tree) of
-        true -> {{Where, N}, N+1, e3d_kd3:enter(Pos, N, Tree)};
-        false ->
-            {V1, P1} = e3d_kd3:nearest(Pos, Tree),
-            case e3d_vec:dist_sqr(Pos, P1) < ?EPSILON of
-                true  -> {{Where, V1}, N, Tree};
-                false -> {{Where, N}, N+1, e3d_kd3:enter(Pos, N, Tree)}
-            end
+    {{I, _V1}, P1} = e3d_kd3:nearest(Pos, Tree),
+    case e3d_vec:dist_sqr(Pos, P1) < ?EPSILON of
+        true  -> {{Where, I}, N, Tree};
+        false -> {{Where, N}, N+1, e3d_kd3:enter(Pos, {N, []}, Tree)}
     end.
+
+vmap_pos(N, Vmap) ->
+    {_Where, Pos} = array:get(N, Vmap),
+    Pos.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
