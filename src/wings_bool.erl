@@ -95,6 +95,14 @@ cut_edges(SE, Vmap, We0) ->
     ECuts = sofs:to_external(sofs:relation_to_family(sofs:relation(WiEs, [{edge,vn}]))),
     lists:foldl(fun cut_edge/2, {Vmap, We0}, ECuts).
 
+cut_edge({on_vertex, Vs}, {Vmap, #we{id=Id}=We}) ->
+    {lists:foldl(fun(V, VM) ->
+                         {Where, _Pos} = array:get(V, Vmap),
+                         Vi = proplists:get_value(Id, Where),
+                         array:set(V,Vi,VM)
+                 end,
+                 Vmap,Vs),
+     We};
 cut_edge({Edge, [V]}, {Vmap, #we{id=Id}=We0}) ->
     {Where,Pos} = array:get(V, Vmap),
     case proplists:get_value(Id, Where) of
@@ -160,31 +168,28 @@ pick_face([#{f:=F}|Ss], F) ->
     pick_face(Ss, F);
 pick_face([], F) -> F.
 
-connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Vmap, #we{vp=Vtab}=We) ->
+connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
+    %?dbg("~w ~w ~w ~w~n",[V1,V2,WeV1,WeV2]),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
-    [Face] = [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)],
-    N = wings_face:normal(Face, We),
-    Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
-    ?dbg("~p ~p(~p) ~p(~p) swap ~p~n", [Face, V1,WeV1,V2,WeV2, e3d_vec:dot(e3d_vec:average(N1,N2), Dir)]),
-    case 0 >= e3d_vec:dot(e3d_vec:average(N1,N2), Dir) of
-        true  -> wings_vertex:force_connect(WeV1,WeV2,Face,We);
-        false -> wings_vertex:force_connect(WeV2,WeV1,Face,We)
-    end.
+    [Face|_] = [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)],
+    connect_verts_1(WeV1, N1, WeV2, N2, Face, We).
 
-connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2},Face,Vmap, #we{vp=Vtab}=We) ->
+connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Face, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
+    %?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face,V1,WeV1,N1,V2,WeV2,N2]),
+    connect_verts_1(WeV1, N1, WeV2, N2, Face, We).
+
+connect_verts_1(WeV1, N1, WeV2, N2, Face, #we{vp=Vtab}=We) ->
     case wings_vertex:edge_through(WeV1,WeV2,Face,We) of
         none when N1 =:= ignore ->
-            ?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face,V1,WeV1,N1,V2,WeV2,N2]),
             wings_vertex:force_connect(WeV1,WeV2,Face,We);
         none ->
             N = wings_face:normal(Face, We),
             Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
-            ?dbg("~p ~p(~p) ~p(~p) swap ~p~n", [Face, V1,WeV1,V2,WeV2, e3d_vec:dot(e3d_vec:average(N1,N2), Dir)]),
             case 0 >= e3d_vec:dot(e3d_vec:average(N1,N2), Dir) of
                 true  -> wings_vertex:force_connect(WeV1,WeV2,Face,We);
                 false -> wings_vertex:force_connect(WeV2,WeV1,Face,We)
@@ -278,24 +283,30 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, We0) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}) ->
     Loop = lists:zip(L1,L2),
-    ?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
-    lists:unzip(filter_tri_edges_1(Loop)).
+    %?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
+    Res = filter_tri_edges_1(Loop),
+    %?dbg("after ~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Res],
+    lists:unzip(Res).
 
 filter_tri_edges_1([{#{v:=V}=V1,U1}, {#{v:=V}=V2, U2}|Vs]) ->
     %% Remove edges to it self (loops)
     filter_tri_edges_1([{filter_edge(V1,V2),filter_edge(U1,U2)}|Vs]);
-filter_tri_edges_1([{#{op:=split_edge,e:=none},#{op:=split_edge, e:=none}}|Vs]) ->
+filter_tri_edges_1([{#{op:=split_edge,e:=none},_}|Vs]) ->
     filter_tri_edges_1(Vs);
-filter_tri_edges_1([{#{op:=split_edge,e:=none}=V1,#{op:=Op}=V2}|Vs]) ->
-    case Op of
-        split_face -> filter_tri_edges_1(Vs);
-        split_edge -> [{edge_to_face(V1), V2}|filter_tri_edges_1(Vs)]
-    end;
-filter_tri_edges_1([{#{op:=Op}=V1,#{op:=split_edge,e:=none}=V2}|Vs]) ->
-    case Op of
-        split_face -> filter_tri_edges_1(Vs);
-        split_edge -> [{V1,edge_to_face(V2)}|filter_tri_edges_1(Vs)]
-    end;
+filter_tri_edges_1([{_, #{op:=split_edge,e:=none}}|Vs]) ->
+    filter_tri_edges_1(Vs);
+%% filter_tri_edges_1([{#{op:=split_edge,e:=none},#{op:=split_edge, e:=none}}|Vs]) ->
+%%     filter_tri_edges_1(Vs);
+%% filter_tri_edges_1([{#{op:=split_edge,e:=none}=V1,#{op:=Op}=V2}|Vs]) ->
+%%     case Op of
+%%         split_face -> filter_tri_edges_1(Vs);
+%%         split_edge -> [{edge_to_face(V1), V2}|filter_tri_edges_1(Vs)]
+%%     end;
+%% filter_tri_edges_1([{#{op:=Op}=V1,#{op:=split_edge,e:=none}=V2}|Vs]) ->
+%%     case Op of
+%%         split_face -> filter_tri_edges_1(Vs);
+%%         split_edge -> [{V1,edge_to_face(V2)}|filter_tri_edges_1(Vs)]
+%%     end;b
 filter_tri_edges_1([V|Vs]) ->
     [V|filter_tri_edges_1(Vs)];
 filter_tri_edges_1([]) -> [].
@@ -303,8 +314,8 @@ filter_tri_edges_1([]) -> [].
 filter_edge(_, #{op:=split_edge, e:=Edge}=V2) when Edge =/= none -> V2;
 filter_edge(V1,_) -> V1.
 
-edge_to_face(#{op:=split_edge}=Orig) ->
-    Orig#{op=>split_face}.
+%% edge_to_face(#{op:=split_edge}=Orig) ->
+%%     Orig#{op=>split_face}.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -329,8 +340,8 @@ make_lookup_table(Edges) ->
                   digraph:add_vertex(G, P1),
                   digraph:add_vertex(G, P2),
                   case edge_exists(G,P1,P2) of
-                      false -> R3 = digraph:add_edge(G, P1, P2, EI), ?dbg("~p ~p => ~p~n",[P1,P2,R3]);
-                      true -> ok, ?dbg("~p ~p => ignored ~n",[P1,P2])
+                      false -> digraph:add_edge(G, P1, P2, EI);
+                      true -> ok
                   end
           end,
     _ = [Add(EI) || EI <- Edges],
