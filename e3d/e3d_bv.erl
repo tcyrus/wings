@@ -217,7 +217,7 @@ union(BBox = {Min0={V10,V11,V12}, Max0 = {V20,V21,V22}},
 sphere(BB = {{_,_,_}, Max = {_,_,_}}) ->
     Center = center(BB),
     {Center,
-     case inside(BB, Center) of
+     case inside(Center, BB) of
 	 true  -> dist_sqr(Center, Max);
 	 false -> 0.0
      end}.
@@ -229,7 +229,7 @@ sphere(BB = {{_,_,_}, Max = {_,_,_}}) ->
 -spec center(e3d_bv()) -> e3d_point().
 center({Min = {_,_,_}, Max = {_,_,_}}) ->
     average(Min,Max);
-center({Center, DistSqr}) when is_list(DistSqr) ->
+center({Center, DistSqr}) when is_number(DistSqr) ->
     Center.
 
 %%--------------------------------------------------------------------
@@ -260,7 +260,7 @@ volume({Min = {Minx,_,_}, Max = {MaxX,_,_}}) ->
 %% @doc Returns true if point is inside bounding volume
 %% @end
 %%--------------------------------------------------------------------
--spec inside(e3d_bv(), e3d_point()) -> boolean().
+-spec inside(e3d_point(), e3d_bv()) -> boolean().
 inside({V30,V31,V32}, {{V10,V11,V12}, {V20,V21,V22}}) ->
     V10 >= V30 andalso V30 >= V20 andalso
 	V11 >= V31 andalso V31 >= V21 andalso
