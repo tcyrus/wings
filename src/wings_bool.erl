@@ -69,8 +69,7 @@ merge(EdgeInfo, #{id:=Id1,fs:=Fs1,we:=We1}=I1, #{id:=Id2,fs:=Fs2,we:=We2}=I2) ->
     {Vmap, ReEI} = make_vmap(ReEI0, We1, We2),
     ?dbg("~p~n",[Vmap]),
     ?dbg("~p~n",[ReEI]),
-    Tab = make_lookup_table(ReEI),
-    Loops0 = build_vtx_loops(Tab, []),
+    Loops0 = build_vtx_loops(ReEI, []),
     ?dbg("~p~n",[Loops0]),
     L10 = [split_loop(Loop, Vmap, {We1,We2}) || Loop <- Loops0],
     L20 = [split_loop(Loop, Vmap, {We2,We1}) || Loop <- Loops0],
@@ -307,10 +306,29 @@ edge_to_face(#{op:=split_edge}=Orig) ->
 %% in the correct direction. Also the V is new Vs on edges and there maybe
 %% several new V on the same wings edge.
 
-build_vtx_loops(G, _Acc) ->
+build_vtx_loops(Edges, _Acc) ->
+    G = make_lookup_table(Edges),
     Comps = digraph_utils:components(G),
-    ?dbg("Cs: ~p~n",[Comps]),
-    [build_vtx_loop(C, G) || C <- Comps].
+    %%?dbg("Cs: ~p: ~p~n",[G, Comps]),
+    Res = [build_vtx_loop(C, G) || C <- Comps],
+    digraph:delete(G),
+    Res.
+
+make_lookup_table(Edges) ->
+    G = digraph:new(),
+    Add = fun(#{p1:={_,P1},p2:={_,P2}}=EI) ->
+                  R1 = digraph:add_vertex(G, P1),
+                  R2 = digraph:add_vertex(G, P2),
+                  case R1 =:= P1 orelse
+                      R2 =:= P2  orelse
+                      not edge_exists(G,P1,P2)
+                  of
+                      true -> digraph:add_edge(G, P1, P2, EI);
+                      false -> ok
+                  end
+          end,
+    _ = [Add(EI) || EI <- Edges],
+    G.
 
 build_vtx_loop([V|_Vs], G) ->
     case build_vtx_loop(V, G, []) of
@@ -326,6 +344,12 @@ build_vtx_loop(V0, G, Acc) ->
             digraph:del_edge(G, Edge),
             build_vtx_loop(Next, G, [Ei,V0|Acc])
     end.
+
+edge_exists(G,V1,V2) ->
+    lists:member(V2, digraph:out_neighbours(G, V1)) orelse
+        lists:member(V1, digraph:out_neighbours(G, V2)).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 pick_edge([{E,V,V,Ei}|_], V, _Best) ->
     {E, V, Ei}; %% Self cyclic pick first
@@ -447,16 +471,6 @@ vmap({Where, Pos}, N, Tree) ->
                 false -> {{Where, N}, N+1, e3d_kd3:enter(Pos, N, Tree)}
             end
     end.
-
-make_lookup_table(Edges) ->
-    G = digraph:new(),
-    Add = fun(#{p1:={_,P1},p2:={_,P2}}=EI) ->
-                  digraph:add_vertex(G, P1),
-                  digraph:add_vertex(G, P2),
-                  digraph:add_edge(G, P1, P2, EI)
-          end,
-    _ = [Add(EI) || EI <- Edges],
-    G.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
