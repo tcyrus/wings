@@ -15,7 +15,7 @@
 
 %% Utilities.
 -export([from_vs/2,to_vertices/2,from_faces/2,
-	 select_region/1,
+	 select_region/1, select_region/2,
 	 select_edge_ring/1,select_edge_ring_incr/1,select_edge_ring_decr/1,
 	 cut/3,fast_cut/3,screaming_cut/3,
 	 dissolve_edges/2,dissolve_edge/2,
@@ -520,10 +520,16 @@ hardness(Edge, hard, Htab) -> gb_sets:add(Edge, Htab).
 %%% having the smallest number of faces.
 %%%
 
+
 select_region(#st{selmode=edge}=St) ->
     Sel = wings_sel:fold(fun select_region/3, [], St),
     wings_sel:set(face, Sel, St);
 select_region(St) -> St.
+
+select_region(Edges, We) when is_list(Edges) ->
+    select_region(gb_sets:from_list(Edges), We, []);
+select_region(Edges, We) ->
+    select_region(Edges, We, []).
 
 select_region(Edges0, #we{id=Id}=We, Acc) ->
     Part = wings_edge_loop:partition_edges(Edges0, We),
