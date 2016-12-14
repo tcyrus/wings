@@ -62,7 +62,7 @@ find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest]) ->
 find_intersect(_Head, []) ->
     false.
 
-merge(EdgeInfo, #{id:=Id1,fs:=Fs1,we:=We1}=I1, #{id:=Id2,fs:=Fs2,we:=We2}=I2) ->
+merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     %?dbg("~p~n",[EdgeInfo]),
     ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo],
     %?dbg("~p~n",[ReEI0]),
@@ -77,8 +77,9 @@ merge(EdgeInfo, #{id:=Id1,fs:=Fs1,we:=We1}=I1, #{id:=Id2,fs:=Fs2,we:=We2}=I2) ->
     {L1,L2} = lists:unzip(Loops),
     We1N = make_verts(L1, Vmap, We1),
     We2N = make_verts(L2, Vmap, We2),
-    MFs = lists:flatten([[MF1,MF2] || #{mf1:=MF1,other:=MF2} <- ReEI]),
-    I1#{id:=min(Id1,Id2),fs:=Fs1++Fs2++MFs, we:={We1N,We2N}}.
+    GetFaces = fun(Id, Ls) -> [{Id,F} || Loop <- Ls, #{f:=F} <- Loop] end,
+    MFs = GetFaces(Id1, L1) ++ GetFaces(Id2, L2),
+    I1#{id:=min(Id1,Id2),fs:=MFs, we:={We1N,We2N}}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 make_verts(Loops, Vmap0, We0) ->
