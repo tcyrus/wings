@@ -15,9 +15,6 @@
 -type e3d_vector() :: {float(),float(),float()}.
 -type e3d_point() :: {float(),float(),float()}.
 
--type e3d_plane() :: {e3d_vector(), float()}.
-
-
 %% Compact 4x4 matrix representation.
 -type e3d_compact_matrix() ::
       {float(),float(),float(),
@@ -46,7 +43,16 @@
 
 -type e3d_transform() :: #e3d_transf{}.
 
-  
+
+-record(ray,
+	{o::e3d_point(),
+         d::e3d_vector(),
+	 n::float(),                            % Near, far (or MinT MaxT)
+         f::float()}).
+
+-type e3d_plane() :: {e3d_vector(), float()}.
+-type e3d_ray() :: #ray{}.
+
 -record(e3d_face,
 	{vs=[],				        %List of vertex indices.
 	 vc=[],					%Vertex color indices.
@@ -81,5 +87,3 @@
 	 creator="", 				%Creator string.
 	 dir					%Directory for file.
 	}).
-
-
