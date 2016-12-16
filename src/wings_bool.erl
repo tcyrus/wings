@@ -21,11 +21,7 @@
 add(#st{shapes=Sh0}=St0) ->
     MapBvh = wings_sel:fold(fun make_bvh/3, [], St0),
     IntScts = find_intersects(MapBvh, MapBvh, []),
-    MFs = lists:append([MFL || #{es:=MFL} <- IntScts]),
-    Sel0 = sofs:relation(MFs, [{id,data}]),
-    Sel1 = sofs:relation_to_family(Sel0),
-    Sel2 = sofs:to_external(Sel1),
-    Sel = [{Id,gb_sets:from_list(L)} || {Id,L} <- Sel2],
+    Sel = [{Id,gb_sets:from_list(Es)} || #{id:=Id, es:=Es} <- IntScts],
     %% ?dbg("~p~n", [Sel2]),
     Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}, Sh) ->
                   gb_trees:update(Id, We, gb_trees:delete(Del, Sh))
@@ -38,8 +34,8 @@ find_intersects([Head|Tail], [_|_] = Alts, Acc) ->
 	false ->
 	    find_intersects(Tail,Alts, Acc);
 	{H1,Merge} ->
-	    NewTail = [Merge|remove(H1, Head, Tail)],
-	    NewAlts = [Merge|remove(H1, Head, Alts)],
+	    NewTail = remove(H1, Head, Tail),
+	    NewAlts = remove(H1, Head, Alts),
 	    find_intersects(NewTail, NewAlts, [Merge|remove(Head,Acc)])
     end;
 find_intersects(_, _, Acc) -> lists:reverse(Acc).
@@ -68,34 +64,29 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     {Es1, We1N0} = make_verts(L1, Vmap, We1),
     {Es2, We2N0} = make_verts(L2, Vmap, We2),
 
-    GetFaces = fun(Id, Ls) -> [{Id,F} || Loop <- Ls, #{f:=F} <- Loop] end,
-    MFs = GetFaces(Id1, L1) ++ GetFaces(Id2, L2),
-    GetEdges = fun(Id, Es) -> [{Id,E} || Loop <- Es, E <- Loop] end,
-    MEs = GetEdges(Id1, Es1) ++ GetEdges(Id2, Es2),
-
     DRes1 = dissolve_faces_in_edgeloops(Es1, L1, We1N0),
     DRes2 = dissolve_faces_in_edgeloops(Es2, L2, We2N0),
 
-    We = weld(DRes1, DRes2),
+    {We,Es} = weld(DRes1, DRes2),
     [Del] = lists:delete(We#we.id, [Id1,Id2]),
     ok = wings_we_util:validate(We),
-    I1#{id:=min(Id1,Id2), es=>MEs, fs:=MFs, we:=We, delete=>Del}.
+    #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, Loop, #we{fs=Ftab} = We0) ->
-    ?dbg("~w~n",[Es]),
+    %% ?dbg("~w~n",[Es]),
     [{_, Fs}] = wings_edge:select_region(lists:append(Es), We0),
     case gb_sets:size(Fs) of
         1 -> {gb_sets:to_list(Fs),We0};
         _ ->
-            ?dbg("~p: ~w~n",[We0#we.id, gb_sets:to_list(Fs)]),
+            %?dbg("~p: ~w~n",[We0#we.id, gb_sets:to_list(Fs)]),
             %% verify that select_region picked correct or invert faces
             Invert = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)),Fs),
-            ?dbg("~p: ~w~n",[We0#we.id,gb_trees:keys(Ftab)]),
+            %?dbg("~p: ~w~n",[We0#we.id,gb_trees:keys(Ftab)]),
             MostlyCorrect = gb_sets:from_list([F || Inner <- Loop, #{f:=F} <- Inner]),
             CurrSize = gb_sets:size(gb_sets:intersection(Fs, MostlyCorrect)),
             InvSize  = gb_sets:size(gb_sets:intersection(Invert, MostlyCorrect)),
-            ?dbg("~p > ~p ~n",[CurrSize, InvSize]),
+            %?dbg("~p > ~p ~n",[CurrSize, InvSize]),
             We1= case CurrSize > InvSize of
                      true -> wings_dissolve:faces(Fs, We0);
                      false -> wings_dissolve:faces(Invert, We0)
@@ -107,25 +98,34 @@ dissolve_faces_in_edgeloops(Es, Loop, #we{fs=Ftab} = We0) ->
 weld(FsWe10, FsWe20) ->
     %% Store Fs1 and Fs2 in plugin so they are renumbered accordingly
     We0 = wings_we:merge(store_pst(FsWe10), store_pst(FsWe20)),
-    ?dbg("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
+    %?dbg("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
     {Faces, We1} = get_pst(We0),
-    lists:foldl(fun([F1,F2], We) -> do_weld(F1,F2,We) end, We1, Faces).
+    Weld = fun([F1,F2], WeAcc) -> do_weld(F1,F2,WeAcc) end,
+    {#we{es=Etab} = We, Es} = lists:foldl(Weld, {We1,[]}, Faces),
+    Borders = ordsets:intersection(ordsets:from_list(Es),
+                                   wings_util:array_keys(Etab)),
+    {We, Borders}.
 
-do_weld(Fa, Fb, We0) ->
+do_weld(Fa, Fb, {We0, Acc}) ->
     [Va|_] = wings_face:vertices_ccw(Fa, We0),
     Pos = wings_vertex:pos(Va, We0),
-    Find = fun(Vb, _, _, Acc) ->
+    Find = fun(Vb, _, _, Vs) ->
                    case wings_vertex:pos(Vb, We0) of
-                       Pos -> [Vb|Acc];
-                       _ -> Acc
+                       Pos -> [Vb|Vs];
+                       _ -> Vs
                    end
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
-    ?dbg("Fa ~p ~p (~p) Fb ~p ~p (~p)~n",
-         [Fa, Va, length(wings_face:vertices_ccw(Fa, We0)), Fb, Vb, length(wings_face:vertices_ccw(Fb, We0))]),
-    We = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
-    Es = wings_we:new_items_as_ordset(edge, We0, We),
-    lists:foldl(fun(E, W) -> wings_collapse:collapse_edge(E, W) end, We, Es).
+    %% ?dbg("Fa ~p ~p (~p) Fb ~p ~p (~p)~n",
+    %%      [Fa, Va, length(wings_face:vertices_ccw(Fa, We0)), Fb, Vb, length(wings_face:vertices_ccw(Fb, We0))]),
+
+    %% Bridge and collapse new edges
+    We1 = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
+    Es = wings_we:new_items_as_ordset(edge, We0, We1),
+    We = lists:foldl(fun(E, W) -> wings_collapse:collapse_edge(E, W) end, We1, Es),
+    %% Find selection
+    BorderEdges = wings_face:to_edges([Fa,Fb], We0),
+    {We, BorderEdges ++ Acc}.
 
 order_loops(Fs, EsLoops0, We) ->
     FInfo = [{lists:sort(wings_face:to_edges([Face], We)), Face} || Face <- Fs],
@@ -139,7 +139,7 @@ order_loops(Fs, EsLoops0, We) ->
 
 
 store_pst({Fs, #we{pst=Pst0}=We}) ->
-    ?dbg("~p: ~w~n",[We#we.id, Fs]),
+    %?dbg("~p: ~w~n",[We#we.id, Fs]),
     {Data, _} = lists:mapfoldl(fun(F, I) -> {{I, F},I+1} end, 0, Fs),
     Pst = gb_trees:insert(?MODULE, gb_trees:from_orddict([{fs,Data}]), Pst0),
     We#we{pst=Pst}.
@@ -157,13 +157,13 @@ get_data(_, _, Acc) -> Acc.
 
 renumber(get_elem, {_Id, Face}) -> Face.
 renumber(set_elem, {Id, _OldFace}, {value, NewFace}) ->
-    ?dbg("ReN ~p: ~w => ~w~n", [Id, _OldFace, NewFace]),
+    %?dbg("ReN ~p: ~w => ~w~n", [Id, _OldFace, NewFace]),
     {Id, NewFace}.
 
 merge_we([_,_]=Wes) ->
     try
         Lists = [FaceInfo || #we{pst=Pst} <- Wes, FaceInfo <- gb_trees:get(fs, gb_trees:get(?MODULE, Pst))],
-        ?dbg("merge ~p~n",[Lists]),
+        %?dbg("merge ~p~n",[Lists]),
         Rel = sofs:relation(Lists, [{id,data}]),
         Fam = sofs:relation_to_family(Rel),
         %% we ignore to make a gb_tree here..
@@ -220,7 +220,7 @@ cut_edge({Edge, Vs}, {Vmap0, #we{es=Etab}=We0}) ->
     {Vmap, We}.
 
 make_edge_loop([#{op:=split_edge}=F|_]=Loop, Vmap, EL, We) ->
-    ?dbg("MakeEdgeLoop~n",[]), [io:format(" ~w~n", [L]) || L <- Loop],
+    %% ?dbg("MakeEdgeLoop~n",[]), [io:format(" ~w~n", [L]) || L <- Loop],
     make_edge_loop_1(Loop, F, Vmap, EL, We);
 make_edge_loop(Loop, Vmap, EL, We) ->
     %% Start with split_edge
@@ -264,7 +264,7 @@ pick_face([], F) -> F.
 connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
-    ?dbg("~w ~w ~w ~w~n",[V1,V2,WeV1,WeV2]),
+    %% ?dbg("~w ~w ~w ~w~n",[V1,V2,WeV1,WeV2]),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
     [Face|_] = [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)],
     connect_verts_1(WeV1, N1, WeV2, N2, Face, We).
@@ -315,7 +315,7 @@ split_face(Fs, Vmap, EL, We0) ->
     FVs = wings_face:vertices_ccw(Face, We1),
     FPos = wings_face:vertex_positions(Face, We1),
     Zipped = lists:zip(FVs, FPos),
-    ?dbg("Orig: ~p~n", [FVs]),
+    %% ?dbg("Orig: ~p~n", [FVs]),
     NumberOfOld = length(FVs),
     case NumberOfOld >= NumberOfNew of
 	true ->
@@ -349,7 +349,7 @@ split_face(Fs, Vmap, EL, We0) ->
 cleanup_edges(FVs, Used, Face, EL, We) ->
     %% Start with a used vertex
     {Vs1,Vs0} = lists:splitwith(fun(V) -> not lists:member(V, Used) end, FVs),
-    ?dbg("~p ~p~n",[EL, Vs0++Vs1]),
+    %% ?dbg("~p ~p~n",[EL, Vs0++Vs1]),
     cleanup_edges(Vs0++Vs1, false, hd(Vs0), [], Used, Face, EL, We).
 
 cleanup_edges([V1|[V2|Vs]=Vs0], Connect, Last, Drop, Used, Face, EL, We0) ->
@@ -374,7 +374,7 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, EL0, We0) ->
                end,
     % ?dbg("drop vs ~p~n",[Drop]),
     Es = wings_edge:from_vs(Drop, We2),
-    ?dbg("drop es ~p ~w~n",[Es, EL]),
+    %% ?dbg("drop es ~p ~w~n",[Es, EL]),
     We3 = wings_edge:dissolve_edges(Es, We2),
     ok = wings_we_util:validate(We3),
     {EL,We3}.
@@ -382,9 +382,9 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, EL0, We0) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}) ->
     Loop = lists:zip(L1,L2),
-    ?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
+    %% ?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
     Res = filter_tri_edges_1(Loop),
-    ?dbg("after ~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Res],
+    %% ?dbg("after ~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Res],
     lists:unzip(Res).
 
 filter_tri_edges_1([{#{v:=V}=V1,U1}, {#{v:=V}=V2, U2}|Vs]) ->
@@ -420,7 +420,7 @@ edge_to_face(#{op:=split_edge}=Orig) ->
 build_vtx_loops(Edges, _Acc) ->
     G = make_lookup_table(Edges),
     Comps = digraph_utils:components(G),
-    ?dbg("Cs: ~w~n",[Comps]),
+    %% ?dbg("Cs: ~w~n",[Comps]),
     Res = [build_vtx_loop(C, G) || C <- Comps],
     [] = digraph:edges(G), %% Assert that we have completed all edges
     digraph:delete(G),
