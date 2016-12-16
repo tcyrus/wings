@@ -20,14 +20,20 @@
 
 add(#st{shapes=Sh0}=St0) ->
     MapBvh = wings_sel:fold(fun make_bvh/3, [], St0),
-    IntScts = find_intersects(MapBvh, MapBvh, []),
-    Sel = [{Id,gb_sets:from_list(Es)} || #{id:=Id, es:=Es} <- IntScts],
-    %% ?dbg("~p~n", [Sel2]),
-    Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}, Sh) ->
-                  gb_trees:update(Id, We, gb_trees:delete(Del, Sh))
-          end,
-    Sh = lists:foldl(Upd, Sh0, IntScts),
-    wings_sel:set(edge, Sel, St0#st{shapes=Sh}).
+    try
+        IntScts = find_intersects(MapBvh, MapBvh, []),
+        Sel = [{Id,gb_sets:from_list(Es)} || #{id:=Id, es:=Es} <- IntScts],
+        %% ?dbg("~p~n", [Sel2]),
+        Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}, Sh) ->
+                      gb_trees:update(Id, We, gb_trees:delete(Del, Sh))
+              end,
+        Sh = lists:foldl(Upd, Sh0, IntScts),
+        wings_sel:set(edge, Sel, St0#st{shapes=Sh})
+    catch throw:multiple_face_ints ->
+            Str = ?__(1, "Have not yet learned how to handle multiple intersections"
+                      "in the same face,\ntry subdividing intersected faces first"),
+            wings_u:error_msg(Str)
+    end.
 
 find_intersects([Head|Tail], [_|_] = Alts, Acc) ->
     case find_intersect(Head, Alts) of
@@ -60,7 +66,11 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     L10 = [split_loop(Loop, Vmap, {We1,We2}) || Loop <- Loops0],
     L20 = [split_loop(Loop, Vmap, {We2,We1}) || Loop <- Loops0],
     Loops = [filter_tri_edges(Loop) || Loop <- lists:zip(L10,L20)],
+
     {L1,L2} = lists:unzip(Loops),
+    %% check_error(L1),
+    %% check_error(L2),
+
     {Es1, We1N0} = make_verts(L1, Vmap, We1),
     {Es2, We2N0} = make_verts(L2, Vmap, We2),
 
@@ -71,6 +81,24 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     [Del] = lists:delete(We#we.id, [Id1,Id2]),
     ok = wings_we_util:validate(We),
     #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
+
+%% check_error([_]) -> ok;
+%% check_error(Loops) ->
+%%     Collect = fun(#{o:=Id1, f:=F1}, Acc) ->
+%%                       [{Id1,F1}|Acc]
+%%               end,
+%%     Check = fun(Loop, Checked) ->
+%%                     Touch0 = lists:foldl(Collect, [], Loop),
+%%                     Touch = gb_sets:from_list(Touch0),
+%%                     Empty = gb_sets:intersection(Touch, Checked),
+%%                     ?dbg("~p ~n",[gb_sets:to_list(Touch)]),
+%%                     ?dbg("~p ~n",[gb_sets:to_list(Empty)]),
+%%                     case gb_sets:is_empty(Empty) of
+%%                         true -> gb_sets:union(Touch,Checked);
+%%                         false -> throw(multiple_face_ints)
+%%                     end
+%%             end,
+%%     lists:foldl(Check, gb_sets:empty(), Loops).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, Loop, #we{fs=Ftab} = We0) ->
@@ -101,9 +129,13 @@ weld(FsWe10, FsWe20) ->
     %?dbg("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
     {Faces, We1} = get_pst(We0),
     Weld = fun([F1,F2], WeAcc) -> do_weld(F1,F2,WeAcc) end,
-    {#we{es=Etab} = We, Es} = lists:foldl(Weld, {We1,[]}, Faces),
+    {#we{es=Etab} = We2, Es} = lists:foldl(Weld, {We1,[]}, Faces),
     Borders = ordsets:intersection(ordsets:from_list(Es),
                                    wings_util:array_keys(Etab)),
+    %% Tesselate large border faces FIXME: only concave
+    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We2)),
+    Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We2) > 5],
+    We = wings_tesselation:quadrangulate(Fs, We2),
     {We, Borders}.
 
 do_weld(Fa, Fb, {We0, Acc}) ->
@@ -117,7 +149,8 @@ do_weld(Fa, Fb, {We0, Acc}) ->
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
     %% ?dbg("Fa ~p ~p (~p) Fb ~p ~p (~p)~n",
-    %%      [Fa, Va, length(wings_face:vertices_ccw(Fa, We0)), Fb, Vb, length(wings_face:vertices_ccw(Fb, We0))]),
+    %%      [Fa, Va, length(wings_face:vertices_ccw(Fa, We0)),
+    %%       Fb, Vb, length(wings_face:vertices_ccw(Fb, We0))]),
 
     %% Bridge and collapse new edges
     We1 = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
