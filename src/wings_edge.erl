@@ -15,7 +15,7 @@
 
 %% Utilities.
 -export([from_vs/2,to_vertices/2,from_faces/2,
-	 select_region/1, select_region/2,
+	 select_region/1,
 	 select_edge_ring/1,select_edge_ring_incr/1,select_edge_ring_decr/1,
 	 cut/3,fast_cut/3,screaming_cut/3,
 	 dissolve_edges/2,dissolve_edge/2,
@@ -23,7 +23,8 @@
 	 patch_edge/4,patch_edge/5,
 	 select_nth_ring/2,
 	 select_nth_loop/2,
-	 length/2
+	 length/2,
+         collect_faces/3
 	]).
 
 -export([dissolve_isolated_vs/2]).
@@ -526,11 +527,6 @@ select_region(#st{selmode=edge}=St) ->
     wings_sel:set(face, Sel, St);
 select_region(St) -> St.
 
-select_region(Edges, We) when is_list(Edges) ->
-    select_region(gb_sets:from_list(Edges), We, []);
-select_region(Edges, We) ->
-    select_region(Edges, We, []).
-
 select_region(Edges0, #we{id=Id}=We, Acc) ->
     Part = wings_edge_loop:partition_edges(Edges0, We),
     Edges = select_region_borders(Edges0, We),
@@ -619,8 +615,10 @@ make_digraph_1(G, [E1|[E2|_]=Es]) ->
     digraph:add_edge(G, E1, E2),
     make_digraph_1(G, Es).
 
-collect_faces(Face, Edges, We) ->
-    collect_faces(gb_sets:singleton(Face), We, Edges, gb_sets:empty()).
+collect_faces(Face, Edges, We) when is_integer(Face) ->
+    collect_faces(gb_sets:singleton(Face), We, Edges, gb_sets:empty());
+collect_faces(Fs, Edges, We) ->
+    collect_faces(Fs, We, Edges, gb_sets:empty()).
 
 collect_faces(Work0, We, Edges, Acc0) ->
     case gb_sets:is_empty(Work0) of
