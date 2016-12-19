@@ -260,7 +260,7 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL, IFs, We0) ->
             {{EL++EL0, Ignore++IFs}, We};
         {FSs, [#{op:=split_edge,v:=VV2}=V2|_]=Rest} ->
             Face = pick_face(FSs,undefined),
-            %%?dbg("~p: ~p~n ~p~n ~p~n",[Face,E1,E2,FSs]),
+            %?dbg("~p: ~p~n ~p~n ~p~n",[Face,E1,E2,FSs]),
             ok = wings_we_util:validate(We0),
             {{We1, Edge}, Ignore} = connect_verts(V1,V2,Face,Vmap,We0),
             ok = wings_we_util:validate(We1),
@@ -278,7 +278,7 @@ pick_face([], F) -> F.
 connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
-    %% ?dbg("~w ~w ~w ~w~n",[V1,V2,WeV1,WeV2]),
+    ?dbg("~w ~w ~w ~w~n",[V1,V2,WeV1,WeV2]),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
     [Face|_] = [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)],
     connect_verts_1(WeV1, N1, WeV2, N2, Face, We).
@@ -287,7 +287,7 @@ connect_verts(#{v:=V1, o_n:=N1},#{v:=V2,o_n:=N2}, Face, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
-    %?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face,V1,WeV1,N1,V2,WeV2,N2]),
+    ?dbg("~p ~p(~p) ~p ~p(~p) ~p ~n", [Face,V1,WeV1,N1,V2,WeV2,N2]),
     connect_verts_1(WeV1, N1, WeV2, N2, Face, We).
 
 connect_verts_1(WeV1, N1, WeV2, N2, Face, #we{vp=Vtab}=We) ->
@@ -302,6 +302,7 @@ connect_verts_1(WeV1, N1, WeV2, N2, Face, #we{vp=Vtab}=We) ->
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), []}
             end;
         Edge ->
+            ?dbg("Skip ~p ~p~n",[Edge,Face]),
             {{We, Edge}, [Face]}
     end.
 
