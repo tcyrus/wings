@@ -23,6 +23,9 @@
          line_dist/3, line_dist_sqr/3
         ]).
 
+-export([format/1]).
+
+
 -include("e3d.hrl").
 
 -compile(inline).
@@ -344,6 +347,11 @@ degrees(V0, V1) ->
             true -> RawCos
           end,
     math:acos(Cos) * (180.0 / math:pi()).
+
+
+-spec format(e3d_point()) -> ok.
+format({A,B,C}) ->
+    io_lib:format("{~.3f,~.3f,~.3f}",[A,B,C]).
 
 %%%
 %%% Internal functions.

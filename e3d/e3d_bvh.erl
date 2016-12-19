@@ -407,15 +407,28 @@ tri_intersect({V0,V1,V2}, {U0,U1,U2}, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2
 			    %% 	false -> false
 			    %% end;
 			    %% Coplanar we don't care about those faces
+                            io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
+                                      [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
+                            io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
+                                      [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
 			    coplanar;
 			{ISect1,A1,A2} ->
-			    {ISect2,B1,B2} = tri_intvals({U0, IdU0}, {U1,IdU1}, {U2,IdU2},
-                                                         Index, Du0, Du1, Du2, Du0Du1, Du0Du2),
-			    %io:format("~p  ~p~n",[sort2(ISect1),sort2(ISect2)]),
-			    %io:format("A1:~w~nA2:~w~nB1:~w~nB2:~w~n", [(A1),(A2),(B1),(B2)]),
-			    PP = pick_points(sort2(ISect1), sort2(ISect2), A1, A2, B1, B2, F1, F2),
-			    %io:format("~p~n~n",[PP]),
-			    PP
+                            case tri_intvals({U0, IdU0}, {U1,IdU1}, {U2,IdU2},
+                                             Index, Du0, Du1, Du2, Du0Du1, Du0Du2)
+                            of
+                                {ISect2,B1,B2} ->
+                                                %io:format("~p  ~p~n",[sort2(ISect1),sort2(ISect2)]),
+                                                %io:format("A1:~w~nA2:~w~nB1:~w~nB2:~w~n", [(A1),(A2),(B1),(B2)]),
+                                    PP = pick_points(sort2(ISect1), sort2(ISect2), A1, A2, B1, B2, F1, F2),
+                                                %io:format("~p~n~n",[PP]),
+                                    PP;
+                                true ->
+                                    io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
+                                              [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
+                                    io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
+                                              [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
+                                    coplanar
+                            end
 		    end
 	    end
     end.
