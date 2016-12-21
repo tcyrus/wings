@@ -245,6 +245,8 @@ make_edge_loop(Loop, Vmap, EL, IFs, We) ->
         {FSs, Edges} -> make_edge_loop(Edges++FSs, Vmap, EL, IFs, We)
     end.
 
+make_edge_loop_1([], _, _, EL, IFs, We) ->
+    {{EL, IFs}, We};
 make_edge_loop_1([#{op:=split_edge}=V1],#{op:=split_edge}=V2, Vmap, EL, IFs, We0) ->
     {{We, New}, Face} = connect_verts(V1,V2,Vmap, We0),
     {{[New|EL], Face ++ IFs}, We};
@@ -252,26 +254,25 @@ make_edge_loop_1([#{op:=split_edge}=V1|[#{op:=split_edge}=V2|_]=Rest], Last, Vma
     {{We, New}, Face} = connect_verts(V1,V2,Vmap, We0),
     make_edge_loop_1(Rest, Last, Vmap, [New|EL], Face ++ IFs, We);
 make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL1, IFs, We0) ->
-    case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Splits) of
-        {FSs, []} ->
-            #{op:=split_edge,v:=V2} = Last,
-            {{We1, Edge}, _Face} = connect_verts(V1,Last,[],Vmap,We0),
-            ?dbg("~p~n~p~n    ~p ~n",[V1,Last,Edge]),
-            ok = wings_we_util:validate(We1),
-            {EL0,_Vmap1,We2} = make_face_vs(FSs, array:get(V2, Vmap), Edge, Vmap, We1),
-            %close_face(Face, FSs, V1, Last, IFs, EL1++EL0, Vmap1, We2);
-            {{EL0,IFs}, We2};
-        {FSs, [#{op:=split_edge,v:=VV2}=V2|_]=Rest} ->
-            ok = wings_we_util:validate(We0),
+    {FSs, [V2|Rest]} =
+        case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Splits) of
+            {FS, []} -> {FS, [Last]};
+            {FS, Rs} -> {FS, Rs}
+        end,
+    case edge_exists(V1,V2,Vmap,We0) of
+        [] -> %% Standard case
             {{We1, Edge}, _Face} = connect_verts(V1,V2,[],Vmap,We0),
             ok = wings_we_util:validate(We1),
             ?dbg("~p~n~p~n   ~p ~n",[V1,V2, Edge]),
-            {EL0,Vmap1,We2} = make_face_vs(FSs, array:get(VV2, Vmap), Edge, Vmap, We1),
-            %{{EL, Fs}, We} = 
-            %close_face(Face, FSs, V1, V2, IFs, EL1++EL0, Vmap1, We2)
-                                                %make_edge_loop_1(Rest, Last, Vmap1, EL, Fs, We)
-            make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, IFs, We2)
+            {EL0,Vmap1,We2} = make_face_vs(FSs, V2, Edge, Vmap, We1),
+            make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, IFs, We2);
+        [{Edge,_F1,_F2}] ->
+            {EL0,Vmap1,We} = make_face_vs(FSs, V2, Edge, Vmap, We0),
+            make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, IFs, We)
     end.
+
+edge_exists(#{v:=V10},#{v:=V20},Vmap,We) ->
+    wings_vertex:edge_through(array:get(V10,Vmap),array:get(V20,Vmap),We).
 
 %% close_face([], RefPs, V1, V2, IFs, EL, Vmap, We0) ->
 %%     {{We, Face}, [_]} = connect_verts(V1,V2,RefPs,Vmap,We0),
@@ -337,7 +338,8 @@ pick_ref_face([], F) -> F.
 
 make_face_vs([_]=Ss, _Vs, Edge, Vmap, We) ->
     make_face_vs_1(Ss, Edge, Vmap, [Edge], We);
-make_face_vs(Ss, Vs, Edge, Vmap, #we{es=Etab}=We) ->
+make_face_vs(Ss, #{v:=Vs0}, Edge, Vmap, #we{es=Etab}=We) ->
+    Vs = array:get(Vs0, Vmap),
     case array:get(Edge, Etab) of
         #edge{vs=Vs} -> make_face_vs_1(lists:reverse(Ss), Edge, Vmap, [Edge], We);
         #edge{ve=Vs} -> make_face_vs_1(Ss, Edge, Vmap, [Edge], We)
