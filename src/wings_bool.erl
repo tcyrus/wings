@@ -71,7 +71,7 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
 
     {Es1, We1N0} = make_verts(L1, Vmap, We1),
     {Es2, We2N0} = make_verts(L2, Vmap, We2),
-    %[io:format("~w~n",[Fs]) || {_, Fs} <- Es2],
+    ?dbg("loops~n",[]), [io:format("  ~w~n",[Fs]) || {_, Fs} <- Es2],
     DRes1 = dissolve_faces_in_edgeloops(Es1, We1N0),
     DRes2 = dissolve_faces_in_edgeloops(Es2, We2N0),
 
@@ -274,14 +274,14 @@ edge_exists(#{v:=V10},#{v:=V20},Vmap,We) ->
 
 connect_verts(V1, V2, Vmap, We) ->
     connect_verts(V1, V2, [], Vmap, We).
-connect_verts(#{o_n:=N1}=V1, #{o_n:=N2}=V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
-    {WeV1,WeV2,Face} = pick_face(RefPoints, V1,V2, Vmap, We),
+connect_verts(V1, V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
+    {WeV1,WeV2,Face,OtherN} = pick_face(RefPoints, V1,V2, Vmap, We),
     case wings_vertex:edge_through(WeV1,WeV2,Face,We) of
         none ->
-            ?dbg("~w: ~w [~w] ~w [~w] in ~w~n",[We#we.id, V1, WeV1, V2, WeV2, Face]),
+            ?dbg("~w: ~w ~w in ~w ~s~n",[We#we.id, WeV1, WeV2, Face, e3d_vec:format(OtherN)]),
             N = wings_face:normal(Face, We),
             Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
-            case 0 >= e3d_vec:dot(e3d_vec:average(N1,N2), Dir) of
+            case 0 >= e3d_vec:dot(OtherN, Dir) of
                 true  -> {wings_vertex:force_connect(WeV1,WeV2,Face,We), [Face]};
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), [Face]}
             end;
@@ -290,40 +290,45 @@ connect_verts(#{o_n:=N1}=V1, #{o_n:=N2}=V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
             {{We, Edge}, []}
     end.
 
-pick_face([], #{v:=V1}, #{v:=V2}, Vmap, We) ->
+pick_face([], #{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
+    OtherN = case e3d_vec:norm(e3d_vec:average(N1,N2)) of
+                 {0.0,0.0,0.0} -> error({N1,N2});
+                 ON -> ON
+             end,
     case [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)] of
         [Face] ->
-            {WeV1,WeV2,Face};
+            {WeV1,WeV2,Face,OtherN};
         [Face|_] = _Fs ->
-            {WeV1,WeV2,Face}
+            {WeV1,WeV2,Face,OtherN}
     end;
-pick_face({Edges,Refs}, #{v:=V1, fs:={LF0,RF0}},#{v:=V2}, Vmap, #we{es=Etab}=We) ->
+pick_face({Edges,[#{o_n:=N}|_]=Refs}, #{v:=V1,fs:={LF0,RF0}}, #{v:=V2},
+          Vmap, #we{es=Etab}=We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     All = wings_vertex:per_face([WeV1,WeV2],We),
-    F = case [Face || {Face, [_,_]} <- All] of
-            [Face] -> Face;
-            [F1,F2] ->
-                [Edge|_] = Edges,
-                ?dbg("id:~p V=~p Fs: ~p ~p~n", [We#we.id, WeV1, F1,F2]),
-                {LF,RF,_} = _Dbg =
-                    case array:get(Edge, Etab) of
-                        #edge{vs=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
-                        #edge{vs=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE};
-                        #edge{ve=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
-                        #edge{ve=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE}
-                    end,
-                R = case pick_ref_face(Refs, undefined) of
-                        LF0 -> LF;
-                        RF0 -> RF
-                    end,
-                ?dbg("pick ~p in ~w ~w => ~p~n", [pick_ref_face(Refs, undefined), [LF0,RF0], _Dbg, R]),
-                R
-        end,
-    {WeV1,WeV2,F}.
+    case [Face || {Face, [_,_]} <- All] of
+        [Face] ->
+            {WeV1,WeV2,Face,N};
+        [F1,F2] ->
+            [Edge|_] = Edges,
+            ?dbg("id:~p V=~p Fs: ~p ~p~n", [We#we.id, WeV1, F1,F2]),
+            {LF,RF,_} = _Dbg =
+                case array:get(Edge, Etab) of
+                    #edge{vs=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
+                    #edge{vs=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE};
+                    #edge{ve=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
+                    #edge{ve=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE}
+                end,
+            Face = case pick_ref_face(Refs, undefined) of
+                       LF0 -> LF;
+                       RF0 -> RF
+                   end,
+            ?dbg("pick ~p in ~w ~w => ~p~n", [pick_ref_face(Refs, undefined), [LF0,RF0], _Dbg, Face]),
+            {WeV1,WeV2,Face,N}
+    end.
 
 pick_ref_face([#{f:=F}|Ss], undefined) ->
     pick_ref_face(Ss, F);
@@ -565,7 +570,7 @@ vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3},
             #{op=>split_edge, o=>Id, f=>F2, e=>Edge, v=>V0, vs=>Edge2, fs=>Fs, o_n=>ON};
        O3 =:= Id ->
             ON = wings_face:normal(F1, OWe),
-            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0}, ON, Vmap, We)
+            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0, o_n=>ON}, Vmap, We)
     end;
 vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3}, p1:={{_, {A,B}=Edge0},V0}}, V0,
             Vmap, {#we{id=Id}=We,OWe}) ->
@@ -578,10 +583,10 @@ vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3}, p1:={{_, {A,B}=Edge0},
             #{op=>split_edge, o=>Id, f=>F1, e=>Edge, v=>V0, vs=>Edge0, fs=>Fs, o_n=>ON};
        O2 =:= Id ->
             ON = wings_face:normal(F1, OWe),
-            check_if_edge(#{op=>split_face, o=>Id, f=>F2, v=>V0}, ON, Vmap, We);
+            check_if_edge(#{op=>split_face, o=>Id, f=>F2, v=>V0, o_n=>ON}, Vmap, We);
        O3 =:= Id ->
             ON = wings_face:normal(F1, OWe),
-            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0}, ON, Vmap, We)
+            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0, o_n=>ON}, Vmap, We)
     end;
 vertex_info(#{mf2:={O1,F1}, mf1:={O2,F2}, other:={O3,F3}, p2:={{_, {A,B}=Edge0},V0}}, V0,
             Vmap, {#we{id=Id}=We,OWe}) ->
@@ -594,10 +599,10 @@ vertex_info(#{mf2:={O1,F1}, mf1:={O2,F2}, other:={O3,F3}, p2:={{_, {A,B}=Edge0},
             #{op=>split_edge, o=>Id, f=>F1, e=>Edge, v=>V0, vs=>Edge0, fs=>Fs, o_n=>ON};
        O2 =:= Id ->
             ON = wings_face:normal(F1, OWe),
-            check_if_edge(#{op=>split_face, o=>Id, f=>F2, v=>V0}, ON, Vmap, We);
+            check_if_edge(#{op=>split_face, o=>Id, f=>F2, v=>V0, o_n=>ON}, Vmap, We);
        O3 =:= Id ->
             ON = wings_face:normal(F1, OWe),
-            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0}, ON, Vmap, We)
+            check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0, o_n=>ON}, Vmap, We)
     end.
 
 edge_faces(none,F1, _We) ->
@@ -606,7 +611,7 @@ edge_faces(Edge,_F1, #we{es=Etab}) ->
     #edge{lf=LF,rf=RF} = array:get(Edge, Etab),
     {LF,RF}.
 
-check_if_edge(#{f:=F, v:=V}=SF, ON, Vmap, #we{id=Id, vp=Vtab, es=Etab}=We) ->
+check_if_edge(#{f:=F, v:=V}=SF, Vmap, #we{id=Id, vp=Vtab, es=Etab}=We) ->
     {Where, Pos} = array:get(V, Vmap),
     Find = fun(_,Edge,#edge{vs=V1,ve=V2},Acc) ->
                    V1P = array:get(V1, Vtab),
@@ -621,10 +626,10 @@ check_if_edge(#{f:=F, v:=V}=SF, ON, Vmap, #we{id=Id, vp=Vtab, es=Etab}=We) ->
         {undefined, []} -> SF;
         {undefined, [{Vs,Edge}]} ->
             #edge{lf=LF,rf=RF} = array:get(Edge, Etab),
-            SF#{op:=split_edge, o_n=>ON, e=>Edge, vs=>Vs, fs=>{LF,RF}};
+            SF#{op:=split_edge, e=>Edge, vs=>Vs, fs=>{LF,RF}};
         {WeV, [{_,Edge}|_]} ->
             #edge{lf=LF,rf=RF} = array:get(Edge, Etab),
-            SF#{op:=split_edge, o_n=>ON, e=>on_vertex, fs=>{LF,RF}, vs=>WeV}
+            SF#{op:=split_edge, e=>on_vertex, fs=>{LF,RF}, vs=>WeV}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
