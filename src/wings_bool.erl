@@ -67,19 +67,19 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     L20 = [split_loop(Loop, Vmap, {We2,We1}) || Loop <- Loops0],
     Loops = [filter_tri_edges(Loop,We1,We2) || Loop <- lists:zip(L10,L20)],
 
-    {L1,L2} = lists:unzip(Loops),
+    {_L1,L2} = lists:unzip(Loops),
 
-    {Es1, We1N0} = make_verts(L1, Vmap, We1),
+%    {Es1, We1N0} = make_verts(L1, Vmap, We1),
     {Es2, We2N0} = make_verts(L2, Vmap, We2),
     ?dbg("loops~n",[]), [io:format("  ~w~n",[Fs]) || {_, Fs} <- Es2],
-    DRes1 = dissolve_faces_in_edgeloops(Es1, We1N0),
-    DRes2 = dissolve_faces_in_edgeloops(Es2, We2N0),
+    %% DRes1 = dissolve_faces_in_edgeloops(Es1, We1N0),
+    _DRes2 = dissolve_faces_in_edgeloops(Es2, We2N0),
 
-    {We,Es} = weld(DRes1, DRes2),
-    [Del] = lists:delete(We#we.id, [Id1,Id2]),
-    ok = wings_we_util:validate(We),
-    #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
-    %%#{id=>Id2, es=>Es2, we=>We2N0, delete=>Id1}. %% debug
+    %% {We,Es} = weld(DRes1, DRes2),
+    %% [Del] = lists:delete(We#we.id, [Id1,Id2]),
+    %% ok = wings_we_util:validate(We),
+    %% #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
+    #{id=>Id2, es=>Es2, we=>We2N0, delete=>Id1}. %% debug
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
@@ -95,6 +95,9 @@ select_region(ELs, We) ->
     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
     Fs  = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
     ?dbg("Dissolve: ~w~n",[gb_sets:to_list(Fs)]),
+    FaceEs = wings_face:to_edges(Fs,We),
+    ?dbg("Face - Es ~w~n", [FaceEs -- gb_sets:to_list(Es)]),
+    ?dbg("Es - Face ~w~n", [gb_sets:to_list(Es) -- FaceEs]),
     wings_edge:collect_faces(Fs, Es, We).
 
 weld(FsWe10, FsWe20) ->
