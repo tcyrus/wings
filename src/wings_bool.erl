@@ -67,19 +67,19 @@ merge(EdgeInfo, #{id:=Id1,we:=We1}=I1, #{id:=Id2,we:=We2}=I2) ->
     L20 = [split_loop(Loop, Vmap, {We2,We1}) || Loop <- Loops0],
     Loops = [filter_tri_edges(Loop,We1,We2) || Loop <- lists:zip(L10,L20)],
 
-    {_L1,L2} = lists:unzip(Loops),
+    {L1,L2} = lists:unzip(Loops),
 
-%    {Es1, We1N0} = make_verts(L1, Vmap, We1),
+    {Es1, We1N0} = make_verts(L1, Vmap, We1),
     {Es2, We2N0} = make_verts(L2, Vmap, We2),
     ?dbg("loops~n",[]), [io:format("  ~w~n",[Fs]) || {_, Fs} <- Es2],
-    %% DRes1 = dissolve_faces_in_edgeloops(Es1, We1N0),
-    _DRes2 = dissolve_faces_in_edgeloops(Es2, We2N0),
+    DRes1 = dissolve_faces_in_edgeloops(Es1, We1N0),
+    DRes2 = dissolve_faces_in_edgeloops(Es2, We2N0),
 
-    %% {We,Es} = weld(DRes1, DRes2),
-    %% [Del] = lists:delete(We#we.id, [Id1,Id2]),
-    %% ok = wings_we_util:validate(We),
-    %% #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
-    #{id=>Id2, es=>Es2, we=>We2N0, delete=>Id1}. %% debug
+    {We,Es} = weld(DRes1, DRes2),
+    [Del] = lists:delete(We#we.id, [Id1,Id2]),
+    ok = wings_we_util:validate(We),
+    #{id=>We#we.id, es=>Es, we=>We, delete=>Del}.
+    %%#{id=>Id2, es=>Es2, we=>We2N0, delete=>Id1}. %% debug
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
@@ -95,9 +95,12 @@ select_region(ELs, We) ->
     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
     Fs  = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
     ?dbg("Dissolve: ~w~n",[gb_sets:to_list(Fs)]),
-    FaceEs = wings_face:to_edges(Fs,We),
-    ?dbg("Face - Es ~w~n", [FaceEs -- gb_sets:to_list(Es)]),
-    ?dbg("Es - Face ~w~n", [gb_sets:to_list(Es) -- FaceEs]),
+    DBG = fun({Ess, Fss}) ->
+		  FaceEs = wings_face:to_edges(Fss,We),
+		  ?dbg("Face(~w) - Es ~w~n", [Fss,FaceEs -- Ess]),
+		  ?dbg("Es - Face ~w~n", [Ess -- FaceEs])
+	  end,
+    [DBG(LI) || LI <- ELs],
     wings_edge:collect_faces(Fs, Es, We).
 
 weld(FsWe10, FsWe20) ->
@@ -284,6 +287,7 @@ connect_verts(V1, V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
             ?dbg("~w: ~w ~w in ~w ~s~n",[We#we.id, WeV1, WeV2, Face, e3d_vec:format(OtherN)]),
             N = wings_face:normal(Face, We),
             Dir = e3d_vec:cross(N,e3d_vec:sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
+	    ?dbg("Swap: ~p~n", [0 >= e3d_vec:dot(OtherN, Dir)]),
             case 0 >= e3d_vec:dot(OtherN, Dir) of
                 true  -> {wings_vertex:force_connect(WeV1,WeV2,Face,We), [Face]};
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), [Face]}
@@ -307,15 +311,17 @@ pick_face([], #{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, Vmap, We) ->
         [Face|_] = _Fs ->
             {WeV1,WeV2,Face,OtherN}
     end;
-pick_face({Edges,[#{o_n:=N}|_]=Refs}, #{v:=V1,fs:={LF0,RF0}}, #{v:=V2},
-          Vmap, #we{es=Etab}=We) ->
+pick_face({Edges,[#{v:=V3, o_n:=N}|_]=Refs}, #{v:=V1,fs:={LF0,RF0}}, #{v:=V2},
+          Vmap, #we{es=Etab, vp=Vtab}=We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     All = wings_vertex:per_face([WeV1,WeV2],We),
     case [Face || {Face, [_,_]} <- All] of
         [Face] ->
-            {WeV1,WeV2,Face,N};
+            {WeV1,WeV2,Face, N};
         [F1,F2] ->
+	    V3P  = vmap_pos(V3, Vmap),
+	    Dir = e3d_vec:sub(V3P,array:get(WeV1,Vtab)),
             [Edge|_] = Edges,
             ?dbg("id:~p V=~p Fs: ~p ~p~n", [We#we.id, WeV1, F1,F2]),
             {LF,RF,_} = _Dbg =
@@ -330,7 +336,7 @@ pick_face({Edges,[#{o_n:=N}|_]=Refs}, #{v:=V1,fs:={LF0,RF0}}, #{v:=V2},
                        RF0 -> RF
                    end,
             ?dbg("pick ~p in ~w ~w => ~p~n", [pick_ref_face(Refs, undefined), [LF0,RF0], _Dbg, Face]),
-            {WeV1,WeV2,Face,N}
+            {WeV1,WeV2,Face,Dir}
     end.
 
 pick_ref_face([#{f:=F}|Ss], undefined) ->
