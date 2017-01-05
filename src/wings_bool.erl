@@ -21,7 +21,7 @@
 add(#st{shapes=Sh0}=St0) ->
     MapBvh = wings_sel:fold(fun make_bvh/3, [], St0),
     IntScts = find_intersects(MapBvh, MapBvh, []),
-    Sel = [{Id,gb_sets:from_list(Es)} || #{id:=Id, es:=Es} <- IntScts],
+    Sel = [{Id,gb_sets:from_list(Es)} || #{we:=#we{id=Id}, es:=Es} <- IntScts],
     %% ?dbg("~p~n", [Sel2]),
     Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}=MI, Sh) ->
 		  Sh1 = gb_trees:update(Id, We, gb_trees:delete_any(Del, Sh)),
@@ -50,14 +50,12 @@ find_intersect(#{id:=Id}=Head, [#{id:=Id}|Rest]) ->
 find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest]) ->
     case e3d_bvh:intersect(B1, B2) of
 	[] ->  find_intersect(Head,Rest);
-	EdgeInfo -> {H1, merge(EdgeInfo, Head, H1)}
+	EdgeInfo -> {H1, init_merge(EdgeInfo, Head, H1)}
     end;
 find_intersect(_Head, []) ->
     false.
 
-merge(EdgeInfo,
-      #{id:=Id1,we:=We10,es:=Es10}=I1,
-      #{id:=Id2,we:=We20,es:=Es20}=I2) ->
+init_merge(EdgeInfo, #{we:=We10,es:=Es10}=I1, #{we:=We20,es:=Es20}=I2) ->
     ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo],
     {Vmap, ReEI} = make_vmap(ReEI0, We10, We20),
     %?dbg("Vmap: ~p~n",[array:to_orddict(Vmap)]),
@@ -67,44 +65,8 @@ merge(EdgeInfo,
     Loops1 = [filter_tri_edges(Loop,We10,We20) || Loop <- lists:zip(L10,L20)],
     Loops = sort_largest(Loops1),
     io:format("~n~nLoops: ~p ~p~n~n",[length(Loops1),length(Loops)]),
-    case make_verts(Loops, Vmap, We10, We20) of
-	{done, We1, Es1, We2, Es2} ->
-            Fs1 = faces_in_region(Es1, We1),
-            Fs2 = faces_in_region(Es2, We2),
-            ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(Fs1)]),
-            ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(Fs2)]),
-            I1#{we=>We1,delete=>none, es:=[], error=>We2};
-	    %% %?dbg("loops:~n",[]), [io:format("  ~w~n",[Fs]) || {_, Fs} <- Es2],
-	    %% DRes1 = dissolve_faces_in_edgeloops(Es1++Es10, We1),
-	    %% DRes2 = dissolve_faces_in_edgeloops(Es2++Es20, We2),
-            %% try
-            %%     {We,Es} = weld(DRes1, DRes2),
-            %%     [Del] = lists:delete(We#we.id, [Id1,Id2]),
-            %%     ok = wings_we_util:validate(We),
-            %%     #{id=>We#we.id, es=>Es, we=>We, delete=>Del}
-            %% catch _:Reason ->
-            %%         ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
-            %%         I1#{we=>element(2, DRes1),delete=>none, es:=[], error=>element(2, DRes2)}
-	    %% end;
-	{cont, We11, Es1, Fs10, We21, Es2, Fs20} ->
-	    Fs11 = gb_sets:union(Fs10,wings_we:new_items_as_gbset(face,We10,We11)),
-	    Fs21 = gb_sets:union(Fs20,wings_we:new_items_as_gbset(face,We20,We21)),
-            We1 = wings_tesselation:quadrangulate(Fs11, We11),
-            We2 = wings_tesselation:quadrangulate(Fs21, We21),
-	    Fs12 = gb_sets:union(Fs11,wings_we:new_items_as_gbset(face,We11,We1)),
-	    Fs22 = gb_sets:union(Fs21,wings_we:new_items_as_gbset(face,We21,We2)),
-	    {Vmap1, B1} = make_bvh(gb_sets:to_list(Fs12), We1),
-	    {Vmap2, B2} = make_bvh(gb_sets:to_list(Fs22), We2),
-	    EI = e3d_bvh:intersect(B1, B2),
-	    I11 = #{id=>Id1,we=>We1,map=>Vmap1,es=>Es1++Es10},
-	    I21 = #{id=>Id2,we=>We2,map=>Vmap2,es=>Es2++Es20},
-	    try
-		merge(EI,I11,I21)
-	    catch _:Reason ->
-		    ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
-		    I11#{delete=>none, es:=[], error=>We2}
-	    end
-    end.
+    #{el1:=Es11, el2:=Es21} = R0 = make_verts(Loops, Vmap, We10, We20),
+    merge(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
 
 sort_largest(Loops) ->
     OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
@@ -112,10 +74,48 @@ sort_largest(Loops) ->
     Ls0 = [{length(L1), Loop} || {L1,_} = Loop <- Loops],
     [L || {_, L} <- lists:sort(Ls0), not Filter(L)].
 
+merge(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1, we2:=We21, el2:=Es2, fs2:=Fs2},We10,We20) ->
+    {We1, Vmap1, B1} = remake_bvh(Fs1, We10, We11),
+    {We2, Vmap2, B2} = remake_bvh(Fs2, We20, We21),
+    EI = e3d_bvh:intersect(B1, B2),
+    I11 = #{we=>We1,map=>Vmap1,es=>Es1},
+    I21 = #{we=>We2,map=>Vmap2,es=>Es2},
+    try
+        init_merge(EI,I11,I21)
+    catch _:Reason ->
+            ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
+            I11#{delete=>none, es:=[], error=>We2}
+    end;
+merge(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2}, #we{id=Id1}, #we{id=Id2}) ->
+    try
+        ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
+        ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
+        DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
+        DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
+        try
+            {We,Es} = weld(DRes1, DRes2),
+            [Del] = lists:delete(We#we.id, [Id1,Id2]),
+            ok = wings_we_util:validate(We),
+            #{es=>Es, we=>We, delete=>Del}
+        catch _:Reason ->
+                ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
+                #{we=>element(2, DRes1),delete=>none, es=>[], error=>element(2, DRes2)}
+        end
+    catch _:Reason2 ->
+            ?dbg("ERROR: ~p:~n ~P~n", [Reason2, erlang:get_stacktrace(), 20]),
+            #{we=>We1,delete=>none, es=>[], error=>We2}
+    end.
+
+remake_bvh(Fs0, We0, We1) ->
+    Fs1 = gb_sets:union(Fs0,wings_we:new_items_as_gbset(face,We0,We1)),
+    We = wings_tesselation:quadrangulate(Fs1, We1),
+    Fs = gb_sets:union(Fs1,wings_we:new_items_as_gbset(face,We1,We)),
+    {Vmap, Bvh} = make_bvh(gb_sets:to_list(Fs), We),
+    {We, Vmap, Bvh}.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
     Fs = faces_in_region(Es, We0),
-    ?dbg("Dissolve: ~w~n",[gb_sets:to_list(Fs)]),
     We = wings_dissolve:faces(Fs, We0),
     Faces = wings_we:new_items_as_ordset(face, We0, We),
     {order_loops(Faces, Es, We),We}.
@@ -241,14 +241,14 @@ make_verts([], _, Fs10, We1, _, Fs20, We2, Acc, Cont) ->
     {Es1, Es2} = lists:unzip(Acc),
     case Cont of
 	[] ->
-	    {done, We1, Es1, We2, Es2};
+	    #{res=>done, we1=>We1, el1=>Es1, we2=>We2, el2=>Es2};
 	_ ->
 	    Add = fun({L1,L2}, {F1,F2}) ->
 			  {gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L1]),F1),
 			   gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L2]),F2)}
 		  end,
 	    {Fs1,Fs2} = lists:foldl(Add, {Fs10,Fs20}, Cont),
-	    {cont, We1, Es1, Fs1, We2, Es2, Fs2}
+            #{res=>cont,we1=>We1, el1=>Es1, fs1=>Fs1, we2=>We2, el2=>Es2, fs2=>Fs2}
     end.
 
 check_if_used(Loop, Fs) ->
@@ -815,7 +815,7 @@ remove(H1, H2, List) ->
     remove(H1, remove(H2, List)).
 
 remap(#{mf1:=MF10,mf2:=MF20,p1:={Pos1,E11,E12}, p2:= {Pos2, E21, E22}, other:=Other},
-      #{id:=Id1,map:=M1}, #{id:=Id2,map:=M2}) ->
+      #{we:=#we{id=Id1},map:=M1}, #{we:=#we{id=Id2},map:=M2}) ->
     MF1 = remap_1(MF10, Id1, M1, Id2, M2),
     MF2 = remap_1(MF20, Id1, M1, Id2, M2),
     Oth = remap_1(Other, Id1, M1, Id2, M2),
