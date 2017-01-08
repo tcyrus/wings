@@ -22,12 +22,14 @@
 	  mesh => integer(),
 	  face => integer()}.
 
+-type mf() :: {Mesh::integer(),Face::integer()}.
+
 -type tri_intersect() ::  %% The (new) edge that intersects the two triangle
 	#{p1    => e3d_point(),  %% Edge point 1
 	  p2    => e3d_point(),  %% Edge point 2
-	  mf1   => {Mesh::integer(),Face::integer()},  %% Mesh and Face of P1
-	  mf2   => {Mesh::integer(),Face::integer()},  %% Mesh and Face of P2
-	  other => {Mesh::integer(),Face::integer()}}. %% Intersecting Mesh and Face
+	  mf1   => mf(),  %% Mesh and Face of P1
+	  mf2   => mf(),  %% Mesh and Face of P2
+	  other => mf()}. %% Intersecting Mesh and Face
 
 -type e3d_bvh() :: #{vs => #{integer()=>array:array()} | binary(),
 		     ns => tree() | binary()}.
@@ -50,7 +52,7 @@
 -define(I32, 32/signed-native).
 -define(U32, 32/unsigned-native).
 
--define(EPSILON, 0.000001).
+-define(EPSILON, 0.00000001).
 -define(IsLeaf(NodeData), ((NodeData) band 16#80000000) > 1).
 -define(GetSkipIndex(NodeData), ((NodeData) band 16#7fffffff)).
 -define(ENTRY_SZ, 8*4).
@@ -118,7 +120,7 @@ ray_trace(Ray = #ray{d=Dir}, #{vs:=VsBin, ns:=Bin}) when is_binary(VsBin) ->
 %% triangles if any.
 %% @end
 %% --------------------------------------------------------------------
--spec intersect(e3d_bvh(), e3d_bvh()) -> [tri_intersect()].
+-spec intersect(e3d_bvh(), e3d_bvh()) -> [tri_intersect()|{coplanar, mf(), mf()}].
 intersect(#{ns:=N1, vs:=Vs1}, #{ns:=N2, vs:=Vs2}) ->
     intersect_1(N1, N2, Vs1, Vs2, []).
 
@@ -362,7 +364,7 @@ intersect_2(#{mesh:=Mesh1, index:=I1, vs:=F1},
     end.
 
 %% Möller (realtimerendering, page 590 in 2nd edition)
-tri_intersect({V0,V1,V2}, {U0,U1,U2}, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2) ->
+tri_intersect({V0,V1,V2}=T1, {U0,U1,U2}=T2, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2) ->
     E1 = e3d_vec:sub(V1, V0),
     E2 = e3d_vec:sub(V2, V0),
     N1 = e3d_vec:cross(E1,E2),
@@ -402,32 +404,23 @@ tri_intersect({V0,V1,V2}, {U0,U1,U2}, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2
 		    case tri_intvals({V0,IdV0},{V1,IdV1},{V2,IdV2},
                                      Index, Dv0, Dv1, Dv2, Dv0Dv1, Dv0Dv2) of
 			true ->
-			    %% case coplanar_tri_tri(N1,V0,V1,V2,U0,U1,U2) of
-			    %% 	true -> {A1,A2};
-			    %% 	false -> false
-			    %% end;
-			    %% Coplanar we don't care about those faces
-                            io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
-                                      [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
-                            io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
-                                      [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
-			    coplanar;
+                            %% io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
+                            %%           [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
+                            %% io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
+                            %%           [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
+			    coplanar(F1,T1,F2,T2);
 			{ISect1,A1,A2} ->
                             case tri_intvals({U0, IdU0}, {U1,IdU1}, {U2,IdU2},
                                              Index, Du0, Du1, Du2, Du0Du1, Du0Du2)
                             of
                                 {ISect2,B1,B2} ->
-                                                %io:format("~p  ~p~n",[sort2(ISect1),sort2(ISect2)]),
-                                                %io:format("A1:~w~nA2:~w~nB1:~w~nB2:~w~n", [(A1),(A2),(B1),(B2)]),
-                                    PP = pick_points(sort2(ISect1), sort2(ISect2), A1, A2, B1, B2, F1, F2),
-                                                %io:format("~p~n~n",[PP]),
-                                    PP;
+                                    pick_points(sort2(ISect1), sort2(ISect2), A1, A2, B1, B2, F1, F2);
                                 true ->
-                                    io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
-                                              [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
-                                    io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
-                                              [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
-                                    coplanar
+                                    %% io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
+                                    %%           [e3d_vec:format(V) || V <- [V0,V1,V2,U0,U1,U2]]),
+                                    %% io:format("~p: ~p ~p: {~p ~p ~p} {~p ~p ~p}~n",
+                                    %%           [?LINE, F1,F2, IdV0,IdV1,IdV2,IdU0,IdU1,IdU2]),
+                                    coplanar(F1,T1,F2,T2)
                             end
 		    end
 	    end
@@ -443,13 +436,13 @@ tri_intvals(V0, V1, V2, Index, D0, D1, D2, _DOD1, DOD2)
     %% here we know that d0d1<=0.0
     isect2(V1,V0,V2,Index,D1,D0,D2);
 tri_intvals(V0, V1, V2, Index, D0, D1, D2, _DOD1, _DOD2)
-  when (D1*D2>0.0) orelse  D0/=0.0 ->
+  when (D1*D2>0.0) orelse  D0 =/= 0.0 ->
     isect2(V0,V1,V2,Index,D0,D1,D2);
 tri_intvals(V0, V1, V2, Index, D0, D1, D2, _DOD1, _DOD2)
-  when D1/=0.0 ->
+  when D1 =/= 0.0 ->
     isect2(V1,V0,V2,Index,D1,D0,D2);
 tri_intvals(V0, V1, V2, Index, D0, D1, D2, _DOD1, _DOD2)
-  when D2/=0.0 ->
+  when D2 =/= 0.0 ->
     isect2(V2,V0,V1,Index,D2,D0,D1);
 tri_intvals(_V1, _V2, _V3, _Index, _D0, _D1, _D2, _DOD1, _DOD2) ->
     %% triangles are coplanar
@@ -505,6 +498,13 @@ sort2({A,B}) ->
 
 eps(V) when abs(V) < ?EPSILON -> 0.0;
 eps(V) -> V.
+
+%% We don't (currently) handle coplanar but return the faces that are
+%% coplanar, triangles that are lines don't have a plane so they are
+%% reported as coplanar these are often caused by bad triangulation,
+%% application might be able to handle that
+coplanar(F1,_T1,F2,_T2) ->
+    {coplanar, F1, F2}.
 
 get_tri(MeshId, {V1,V2,V3}, AllVs) ->
     Vs = maps:get(MeshId,AllVs),

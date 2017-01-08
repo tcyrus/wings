@@ -16,7 +16,7 @@
 
 -include("wings.hrl").
 -compile(export_all).
--define(EPSILON, 1.0e-10).  %% used without SQRT() => 1.0e-5
+-define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
 
 add(#st{shapes=Sh0}=St0) ->
     MapBvh = wings_sel:fold(fun make_bvh/3, [], St0),
@@ -56,7 +56,7 @@ find_intersect(_Head, []) ->
     false.
 
 init_merge(EdgeInfo, #{we:=We10,es:=Es10}=I1, #{we:=We20,es:=Es20}=I2) ->
-    ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo],
+    ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo, Edge =/= coplanar],
     {Vmap, ReEI} = make_vmap(ReEI0, We10, We20),
     %?dbg("Vmap: ~p~n",[array:to_orddict(Vmap)]),
     Loops0 = build_vtx_loops(ReEI, []),
@@ -64,7 +64,7 @@ init_merge(EdgeInfo, #{we:=We10,es:=Es10}=I1, #{we:=We20,es:=Es20}=I2) ->
     L20 = [split_loop(Loop, Vmap, {We20,We10}) || Loop <- Loops0],
     Loops1 = [filter_tri_edges(Loop,We10,We20) || Loop <- lists:zip(L10,L20)],
     Loops = sort_largest(Loops1),
-    io:format("~n~nLoops: ~p ~p~n~n",[length(Loops1),length(Loops)]),
+    % io:format("~n~nLoops: ~p ~p~n~n",[length(Loops1),length(Loops)]),
     #{el1:=Es11, el2:=Es21} = R0 = make_verts(Loops, Vmap, We10, We20),
     merge(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
 
@@ -88,8 +88,8 @@ merge(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1, we2:=We21, el2:=Es2, fs2:=Fs2},
     end;
 merge(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2}, #we{id=Id1}, #we{id=Id2}) ->
     try
-        ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
-        ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
+        %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
+        %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
         DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
         DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
         try
@@ -252,7 +252,7 @@ check_if_used(Loop, Fs) ->
 
 
 make_verts(Loop, Vmap0, We0) ->
-    ?dbg("Make verts:~n",[]), [io:format(" ~w~n", [E]) || E <- Loop],
+    %% ?dbg("Make verts:~n",[]), [io:format(" ~w~n", [E]) || E <- Loop],
     {Vmap, We1} = cut_edges(Loop, Vmap0, We0),
     make_edge_loop(Loop, Vmap, [], [], We1).
 
@@ -318,15 +318,15 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
         end,
     case edge_exists(V1,V2,Vmap,We0) of
         [] -> %% Standard case
-            ?dbg("Connect: ~w[~w] ~w[~w]~n",[maps:get(v,V1), array:get(maps:get(v,V1),Vmap),
-                                             maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
+            %% ?dbg("Connect: ~w[~w] ~w[~w]~n",[maps:get(v,V1), array:get(maps:get(v,V1),Vmap),
+            %%                                  maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
             {{We1, Edge}, Face} = connect_verts(V1,V2,{EL0,FSs},Vmap,We0),
             ok = wings_we_util:validate(We1),
-            ?dbg("new edge ~w face ~w~n",[Edge, Face]),
+            %% ?dbg("new edge ~w face ~w~n",[Edge, Face]),
             {EL1,Vmap1,We2} = make_face_vs(FSs, V1, Edge, Vmap, We1),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, Face++IFs, We2);
         [{Edge,_F1,_F2}] ->
-            ?dbg("Ignore ~w ~w edge ~p~n",[maps:get(v,V1),maps:get(v,V2),Edge]),
+            %% ?dbg("Ignore ~w ~w edge ~p~n",[maps:get(v,V1),maps:get(v,V2),Edge]),
             {EL1,Vmap1,We} = make_face_vs(FSs, V1, Edge, Vmap, We0),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, IFs, We)
     end.
@@ -340,16 +340,16 @@ connect_verts(V1, V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
     {WeV1,WeV2,Face,OtherN} = pick_face(RefPoints, V1,V2, Vmap, We),
     case wings_vertex:edge_through(WeV1,WeV2,Face,We) of
         none ->
-            ?dbg("~w: ~w ~w in ~w ~s~n",[We#we.id, WeV1, WeV2, Face, e3d_vec:format(OtherN)]),
+            %% ?dbg("~w: ~w ~w in ~w ~s~n",[We#we.id, WeV1, WeV2, Face, e3d_vec:format(OtherN)]),
             N = wings_face:normal(Face, We),
             Dir = e3d_vec:cross(N,e3d_vec:norm_sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
-	    ?dbg("Swap: ~p~n", [0 >= e3d_vec:dot(OtherN, Dir)]),
+	    %% ?dbg("Swap: ~p~n", [0 >= e3d_vec:dot(OtherN, Dir)]),
             case 0 >= e3d_vec:dot(OtherN, Dir) of
                 true  -> {wings_vertex:force_connect(WeV1,WeV2,Face,We), [Face]};
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), [Face]}
             end;
         Edge when RefPoints =:= [] ->
-            ?dbg("Skip ~p ~p~n",[Edge,Face]),
+            %% ?dbg("Skip ~p ~p~n",[Edge,Face]),
             {{We, Edge}, []}
     end.
 
@@ -381,7 +381,7 @@ pick_face({Edges,Refs}, #{v:=V1,fs:={LF0,RF0}}=R0, #{v:=V2}=R1,
 	    Face = case lists:member(Wanted,Faces) of
 		       true -> Wanted;
 		       _  ->
-			   ?dbg("id:~p V=~p Fs: ~p~n", [We#we.id, WeV1, Faces]),
+			   %% ?dbg("id:~p V=~p Fs: ~p~n", [We#we.id, WeV1, Faces]),
 			   [F1,F2] = Faces,
 			   %% Edges might be empty
 			   [Edge|_] = Edges,
