@@ -34,6 +34,8 @@ add(#st{shapes=Sh0}=St0) ->
     Sh = lists:foldl(Upd, Sh0, IntScts),
     wings_sel:set(edge, Sel, St0#st{shapes=Sh}).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 find_intersects([Head|Tail], [_|_] = Alts, Acc) ->
     case find_intersect(Head, Alts) of
 	false ->
@@ -50,43 +52,48 @@ find_intersect(#{id:=Id}=Head, [#{id:=Id}|Rest]) ->
 find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest]) ->
     case e3d_bvh:intersect(B1, B2) of
 	[] ->  find_intersect(Head,Rest);
-	EdgeInfo -> {H1, init_merge(EdgeInfo, Head, H1)}
+	EdgeInfo -> {H1, merge_0(EdgeInfo, Head, H1)}
     end;
 find_intersect(_Head, []) ->
     false.
 
-init_merge(EdgeInfo, #{we:=We10,es:=Es10}=I1, #{we:=We20,es:=Es20}=I2) ->
-    ReEI0 = [remap(Edge, I1, I2) || Edge <- EdgeInfo, Edge =/= coplanar],
-    {Vmap, ReEI} = make_vmap(ReEI0, We10, We20),
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+merge_0(EdgeInfo0, #{we:=We10}=I1, #{we:=We20}=I2) ->
+    EdgeInfo = [remap(Edge, I1, I2) || Edge <- EdgeInfo0],
+    case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
+        [] -> merge_1(EdgeInfo, I1, I2);
+        Coplanar -> tesselate_and_restart(Coplanar, We10, We20)
+    end.
+
+merge_1(EdgeInfo0, #{we:=We10,es:=Es10}, #{we:=We20,es:=Es20}) ->
+    {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),
     %?dbg("Vmap: ~p~n",[array:to_orddict(Vmap)]),
-    Loops0 = build_vtx_loops(ReEI, []),
+    Loops0 = build_vtx_loops(EdgeInfo, []),
     L10 = [split_loop(Loop, Vmap, {We10,We20}) || Loop <- Loops0],
     L20 = [split_loop(Loop, Vmap, {We20,We10}) || Loop <- Loops0],
     Loops1 = [filter_tri_edges(Loop,We10,We20) || Loop <- lists:zip(L10,L20)],
     Loops = sort_largest(Loops1),
     % io:format("~n~nLoops: ~p ~p~n~n",[length(Loops1),length(Loops)]),
     #{el1:=Es11, el2:=Es21} = R0 = make_verts(Loops, Vmap, We10, We20),
-    merge(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
+    merge_2(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
 
-sort_largest(Loops) ->
-    OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
-    Filter = fun({L1,L2}) -> lists:all(OnV,L1) andalso lists:all(OnV,L2) end,
-    Ls0 = [{length(L1), Loop} || {L1,_} = Loop <- Loops],
-    [L || {_, L} <- lists:sort(Ls0), not Filter(L)].
-
-merge(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1, we2:=We21, el2:=Es2, fs2:=Fs2},We10,We20) ->
+merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1,
+          we2:=We21, el2:=Es2, fs2:=Fs2},We10,We20) ->
     {We1, Vmap1, B1} = remake_bvh(Fs1, We10, We11),
     {We2, Vmap2, B2} = remake_bvh(Fs2, We20, We21),
-    EI = e3d_bvh:intersect(B1, B2),
+    EI0 = e3d_bvh:intersect(B1, B2),
     I11 = #{we=>We1,map=>Vmap1,es=>Es1},
     I21 = #{we=>We2,map=>Vmap2,es=>Es2},
     try
-        init_merge(EI,I11,I21)
+        EI = [remap(Edge, I11, I21) || Edge <- EI0],
+        merge_1(EI,I11,I21) %% We should crash if we have coplanar faces in this step
     catch _:Reason ->
             ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
             I11#{delete=>none, es:=[], error=>We2}
     end;
-merge(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2}, #we{id=Id1}, #we{id=Id2}) ->
+merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2},
+        #we{id=Id1}, #we{id=Id2}) ->
     try
         %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
         %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
@@ -106,12 +113,54 @@ merge(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2}, #we{id=Id1}, #we{id=
             #{we=>We1,delete=>none, es=>[], error=>We2}
     end.
 
+sort_largest(Loops) ->
+    OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
+    Filter = fun({L1,L2}) -> lists:all(OnV,L1) andalso lists:all(OnV,L2) end,
+    Ls0 = [{length(L1), Loop} || {L1,_} = Loop <- Loops],
+    [L || {_, L} <- lists:sort(Ls0), not Filter(L)].
+
 remake_bvh(Fs0, We0, We1) ->
     Fs1 = gb_sets:union(Fs0,wings_we:new_items_as_gbset(face,We0,We1)),
     We = wings_tesselation:quadrangulate(Fs1, We1),
     Fs = gb_sets:union(Fs1,wings_we:new_items_as_gbset(face,We1,We)),
     {Vmap, Bvh} = make_bvh(gb_sets:to_list(Fs), We),
     {We, Vmap, Bvh}.
+
+tesselate_and_restart(Coplanar, #we{id=Id1}=We1, We2) ->
+    Count = fun({Id,Face}) ->
+                    case Id =:= Id1 of
+                        true -> wings_face:vertices(Face, We1);
+                        false -> wings_face:vertices(Face, We2)
+                    end
+            end,
+    Tess0 = lists:foldl(fun({MF1,MF2}, Acc) ->
+                                C1 = Count(MF1),
+                                C2 = Count(MF2),
+                                case {C1 > 4, C2 > 4} of
+                                    {true, true} -> [MF1,MF2|Acc];
+                                    {true,false} -> [MF1|Acc];
+                                    {false,true} -> [MF2|Acc];
+                                   _  -> error(coplanar)
+                                end
+                        end, [], Coplanar),
+    Tess = sofs:to_external(sofs:relation_to_family(sofs:relation(Tess0))),
+    {We10, We20} = tesselate(Tess, We1, We2),
+    {Vmap1, B1} = make_bvh(We10),
+    {Vmap2, B2} = make_bvh(We20),
+    EI0 = e3d_bvh:intersect(B1, B2),
+    I11 = #{we=>We10,map=>Vmap1,es=>[]},
+    I21 = #{we=>We20,map=>Vmap2,es=>[]},
+    EI = [remap(Edge, I11, I21) || Edge <- EI0],
+    merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
+
+tesselate([{Id, Fs}|Rest], #we{id=Id}=We1, We2) ->
+    We = wings_tesselation:quadrangulate(Fs, We1),
+    tesselate(Rest, We, We2);
+tesselate([{Id, Fs}|Rest], We1, #we{id=Id}=We2) ->
+    We = wings_tesselation:quadrangulate(Fs, We2),
+    tesselate(Rest, We1, We);
+tesselate([], We1, We2) ->
+    {We1,We2}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
@@ -741,11 +790,12 @@ on_vertex(#{o:=Id, v:=V}=SF, Vmap) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-make_bvh(_, #we{id=Id, fs=Fs0}=We0, Bvhs) ->
-    Fs = gb_trees:keys(Fs0),
-    {Ts, Bvh} = make_bvh(Fs, We0),
+make_bvh(_, #we{id=Id}=We0, Bvhs) ->
+    {Ts, Bvh} = make_bvh(We0),
     [#{id=>Id,map=>Ts,bvh=>Bvh,es=>[],we=>We0}|Bvhs].
 
+make_bvh(#we{fs=Fs0}=We) ->
+    make_bvh(gb_trees:keys(Fs0), We).
 
 make_bvh(Fs, #we{id=Id}=We) ->
     {Vtab,Ts} = triangles(Fs, We),
@@ -813,7 +863,11 @@ remap(#{mf1:=MF10,mf2:=MF20,p1:={Pos1,E11,E12}, p2:= {Pos2, E21, E22}, other:=Ot
     case Id1 < Id2 of
         true  -> #{mf1=>MF1, mf2=>MF2, p1=>{EId1, Pos1}, p2=>{EId2, Pos2}, other=>Oth};
         false -> #{mf1=>MF2, mf2=>MF1, p1=>{EId2, Pos2}, p2=>{EId1, Pos1}, other=>Oth}
-    end.
+    end;
+remap({coplanar, MF10, MF20}, #{we:=#we{id=Id1},map:=M1}, #{we:=#we{id=Id2},map:=M2}) ->
+    MF1 = remap_1(MF10, Id1, M1, Id2, M2),
+    MF2 = remap_1(MF20, Id1, M1, Id2, M2),
+    {coplanar, MF1, MF2}.
 
 remap_1({Id, TriFace}, Id, M1, _Id2, _M2) ->
     {_, Face} = array:get(TriFace, M1),
@@ -859,18 +913,18 @@ tri_poly(Vs, #we{vp=Vtab}=We, Face, Acc0) ->
     VsPos = [array:get(V, Vtab) || V <- Vs],
     N = e3d_vec:normal(VsPos),
     {Fs0, Ps0} = wings_gl:triangulate(N, VsPos),
-%    ?dbg("~p ~w~n",[Face, Vs]),
-%    io:format("~p~n", [Fs0]),
-%    [io:format("~s ",[e3d_vec:format(V)]) || V <- VsPos],
-%    io:format("~n", []),
-%    [io:format("~s ",[e3d_vec:format(V)]) || V <- Ps0],
-%    io:format("~n", []),
+    %% ?dbg("~p ~w~n",[Face, Vs]),
+    %% io:format("~p~n", [Fs0]),
+    %% [io:format("~s ",[e3d_vec:format(V)]) || V <- VsPos],
+    %% io:format("~n", []),
+    %% [io:format("~s ",[e3d_vec:format(V)]) || V <- Ps0],
+    %% io:format("~n", []),
     Index = array:size(Vtab),
     {TessVtab, Is} = renumber_and_add_vs(Ps0, Vs, Index, Vtab, []),
-%    io:format("~p~n", [Is]),
+    %% io:format("~p~n", [Is]),
     Fs = lists:foldl(fun({A,B,C}=_F, Acc) ->
 			     F = {element(A,Is), element(B, Is), element(C,Is)},
-%                             io:format("~p => ~p~n", [_F, F]),
+                             %% io:format("~p => ~p~n", [_F, F]),
 			     [{F, Face}|Acc]
 		     end, Acc0, Fs0),
     {We#we{vp=TessVtab}, Fs}.
