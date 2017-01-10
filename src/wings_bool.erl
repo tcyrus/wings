@@ -14,8 +14,11 @@
 -module(wings_bool).
 -export([add/1]).
 
+%% wings_we:merge callbacks
+-export([get_data/3, renumber/2, renumber/3, merge_we/1]).
+
 -include("wings.hrl").
--compile(export_all).
+
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
 
 add(#st{shapes=Sh0}=St0) ->
@@ -175,8 +178,6 @@ dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
 faces_in_region(ELs, We) ->
     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
     Fs  = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
-    %% DBG = fun({_Ess, Fss}) -> ?dbg("~p: Fs ~w~n",[We#we.id, Fss]) end,
-    %% [DBG(LI) || LI <- ELs],
     case gb_sets:is_empty(Fs) of
         true -> wings_edge:select_region(Es, We);
         false -> wings_edge:reachable_faces(Fs, Es, We)
@@ -191,7 +192,6 @@ weld(FsWe10, FsWe20) ->
     {#we{es=Etab} = We2, Es} = lists:foldl(Weld, {We1,[]}, Faces),
     Borders = ordsets:intersection(ordsets:from_list(Es),
                                    wings_util:array_keys(Etab)),
-    %% Tesselate large border faces FIXME: only concave
     BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We2)),
     Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We2) > 5],
     We = wings_tesselation:quadrangulate(Fs, We2),
@@ -207,9 +207,6 @@ do_weld(Fa, Fb, {We0, Acc}) ->
                    end
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
-    %% ?dbg("Fa ~p ~p (~p) Fb ~p ~p (~p)~n",
-    %%      [Fa, Va, length(wings_face:vertices_ccw(Fa, We0)),
-    %%       Fb, Vb, length(wings_face:vertices_ccw(Fb, We0))]),
 
     %% Bridge and collapse new edges
     We1 = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
@@ -270,8 +267,8 @@ make_verts([{L1,L2}=L12|Ls], Vm10, Fs10, We10, Vm20, Fs20, We20, Acc, Cont) ->
 	true ->
 	    make_verts(Ls, Vm10, Fs10, We10, Vm20, Fs20, We20, Acc, [L12|Cont]);
 	false ->
-	    {Es1, Fs11, Vm1, We1} = make_verts(L1, Vm10, We10),
-	    {Es2, Fs21, Vm2, We2} = make_verts(L2, Vm20, We20),
+	    {Es1, Fs11, Vm1, We1} = make_verts_per_we(L1, Vm10, We10),
+	    {Es2, Fs21, Vm2, We2} = make_verts_per_we(L2, Vm20, We20),
 	    Fs1 = gb_sets:union(gb_sets:from_list(Fs11), Fs10),
 	    Fs2 = gb_sets:union(gb_sets:from_list(Fs21), Fs20),
 	    make_verts(Ls, Vm1, Fs1, We1, Vm2, Fs2, We2,[{{Es1,Fs11},{Es2,Fs21}}|Acc], Cont)
@@ -299,8 +296,7 @@ check_if_used(Loop, Fs) ->
 	    not gb_sets:is_empty(Int)
     end.
 
-
-make_verts(Loop, Vmap0, We0) ->
+make_verts_per_we(Loop, Vmap0, We0) ->
     %% ?dbg("Make verts:~n",[]), [io:format(" ~w~n", [E]) || E <- Loop],
     {Vmap, We1} = cut_edges(Loop, Vmap0, We0),
     make_edge_loop(Loop, Vmap, [], [], We1).
@@ -367,8 +363,9 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
         end,
     case edge_exists(V1,V2,Vmap,We0) of
         [] -> %% Standard case
-            %% ?dbg("Connect: ~w[~w] ~w[~w]~n",[maps:get(v,V1), array:get(maps:get(v,V1),Vmap),
-            %%                                  maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
+            %% ?dbg("Connect: ~w[~w] ~w[~w]~n",
+            %%        [maps:get(v,V1), array:get(maps:get(v,V1),Vmap),
+            %%         maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
             {{We1, Edge}, Face} = connect_verts(V1,V2,{EL0,FSs},Vmap,We0),
             ok = wings_we_util:validate(We1),
             %% ?dbg("new edge ~w face ~w~n",[Edge, Face]),
@@ -416,7 +413,7 @@ pick_face([], #{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, Vmap, We) ->
         [Face|_] = _Fs ->
             {WeV1,WeV2,Face,OtherN}
     end;
-pick_face({Edges,Refs}, #{v:=V1,fs:={LF0,RF0}}=R0, #{v:=V2}=R1,
+pick_face({Edges,Refs}, #{v:=V1,fs:=Fs}=R0, #{v:=V2}=R1,
           Vmap, #we{es=Etab, vp=_Vtab}=We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
@@ -425,29 +422,29 @@ pick_face({Edges,Refs}, #{v:=V1,fs:={LF0,RF0}}=R0, #{v:=V2}=R1,
     case [Face || {Face, [_,_]} <- All] of
         [Face] ->
             {WeV1,WeV2,Face, N};
-        Faces ->
-	    Wanted = pick_ref_face(Refs, undefined),
-	    Face = case lists:member(Wanted,Faces) of
-		       true -> Wanted;
-		       _  ->
-			   %% ?dbg("id:~p V=~p Fs: ~p~n", [We#we.id, WeV1, Faces]),
-			   [F1,F2] = Faces,
-			   %% Edges might be empty
-			   [Edge|_] = Edges,
-			   {LF,RF,_} =
-			       case array:get(Edge, Etab) of
-				   #edge{vs=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
-				   #edge{vs=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE};
-				   #edge{ve=WeV1, lf=F1, rf=F2} -> {F1,F2,?LINE};
-				   #edge{ve=WeV1, lf=F2, rf=F1} -> {F2,F1,?LINE}
-			       end,
-			   case Wanted of
-			       LF0 -> LF;
-			       RF0 -> RF
-			   end
-		   end,
-%	    ?dbg("pick ~p in ~w => ~p~n", [pick_ref_face(Refs, undefined), Faces, Face]),
+        Connected ->
+            Wanted = pick_ref_face(Refs, undefined),
+            Face = pick_face_2(Wanted, Fs, Connected, Edges, Etab),
+            %% ?dbg("pick ~p in ~w => ~p~n", [Wanted, Faces, Face]),
             {WeV1,WeV2,Face,N}
+    end.
+
+pick_face_2(Wanted, {LF0,RF0}, [F1,F2|_]=Connected, Edges, Etab) ->
+    case lists:member(Wanted,Connected) of
+        true -> Wanted;
+        _  ->
+            %% ?dbg("id:~p V=~p Fs: ~p~n", [We#we.id, WeV1, Faces]),
+            [Edge|_] = Edges,
+            {LF,RF} = case array:get(Edge, Etab) of
+                          #edge{vs=_WeV1, lf=F1, rf=F2} -> {F1,F2};
+                          #edge{vs=_WeV1, lf=F2, rf=F1} -> {F2,F1};
+                          #edge{ve=_WeV1, lf=F1, rf=F2} -> {F1,F2};
+                          #edge{ve=_WeV1, lf=F2, rf=F1} -> {F2,F1}
+                      end,
+            case Wanted of
+                LF0 -> LF;
+                RF0 -> RF
+            end
     end.
 
 pick_ref_face([#{f:=F}|Ss], undefined) ->
@@ -540,7 +537,6 @@ split_face([#{v:=V1},#{v:=V2}|_]=Fs, Vmap, EL, We0) ->
 cleanup_edges(FVs, Used, Face, EL0, Vmap, We) ->
     %% Start with a used vertex
     {Vs1,Vs0} = lists:splitwith(fun(V) -> not lists:member(V, Used) end, FVs),
-    %% ?dbg("~p ~p~n",[EL, Vs0++Vs1]),
     {EL,Fs,WeR} = cleanup_edges(Vs0++Vs1, false, hd(Vs0), [], Used, Face, EL0, We),
     {EL,Fs,Vmap,WeR}.
 
@@ -564,9 +560,7 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, EL0, We0) ->
                        Edge = wings_vertex:edge_through(V1,Last,Face,We0),
                        {[Edge|EL0],We0}
                end,
-    % ?dbg("drop vs ~p~n",[Drop]),
     Es = wings_edge:from_vs(Drop, We2),
-    %% ?dbg("drop es ~p ~w~n",[Es, EL]),
     We3 = wings_edge:dissolve_edges(Es, We2),
     ok = wings_we_util:validate(We3),
     {EL, [Face],We3}.
@@ -574,9 +568,7 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, EL0, We0) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}, We1,We2) ->
     Loop = lists:zip(L1,L2),
-    %% ?dbg("~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Loop],
     Res = filter_tri_edges_1(Loop,We1,We2),
-    %% ?dbg("after ~p~n",[?FUNCTION_NAME]), [io:format("1: ~w~n2: ~w~n~n",[K1,K2])||{K1,K2}<-Res],
     lists:unzip(Res).
 
 filter_tri_edges_1([{#{v:=V}=V1,U1}, {#{v:=V}=V2, U2}|Vs],We1,We2) ->
@@ -612,10 +604,8 @@ filter_edge(V1,_) -> V1.
 
 skip_tess_edge(_, #{e:=on_vertex}, _We) -> false;
 skip_tess_edge(N, #{e:=Edge}=_EC, #we{es=Etab}=We) ->
-%    ?dbg("~p~n",[_EC]),
     #edge{vs=VS,ve=VE} = array:get(Edge,Etab),
     Dir = e3d_vec:sub(wings_vertex:pos(VS, We),wings_vertex:pos(VE,We)),
-    %?dbg("~p ~p => ~p~n", [N, Dir, e3d_vec:dot(N, Dir)]),
     abs(e3d_vec:dot(N, Dir)) < 0.1.
 
 edge_to_face(#{op:=split_edge}=Orig) ->
@@ -913,18 +903,10 @@ tri_poly(Vs, #we{vp=Vtab}=We, Face, Acc0) ->
     VsPos = [array:get(V, Vtab) || V <- Vs],
     N = e3d_vec:normal(VsPos),
     {Fs0, Ps0} = wings_gl:triangulate(N, VsPos),
-    %% ?dbg("~p ~w~n",[Face, Vs]),
-    %% io:format("~p~n", [Fs0]),
-    %% [io:format("~s ",[e3d_vec:format(V)]) || V <- VsPos],
-    %% io:format("~n", []),
-    %% [io:format("~s ",[e3d_vec:format(V)]) || V <- Ps0],
-    %% io:format("~n", []),
     Index = array:size(Vtab),
     {TessVtab, Is} = renumber_and_add_vs(Ps0, Vs, Index, Vtab, []),
-    %% io:format("~p~n", [Is]),
     Fs = lists:foldl(fun({A,B,C}=_F, Acc) ->
 			     F = {element(A,Is), element(B, Is), element(C,Is)},
-                             %% io:format("~p => ~p~n", [_F, F]),
 			     [{F, Face}|Acc]
 		     end, Acc0, Fs0),
     {We#we{vp=TessVtab}, Fs}.
