@@ -66,17 +66,22 @@ merge_0(EdgeInfo0, #{we:=We10}=I1, #{we:=We20}=I2) ->
     end.
 
 merge_1(EdgeInfo0, #{we:=We10,es:=Es10}, #{we:=We20,es:=Es20}) ->
-    {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),
+    {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),  %% Make vertex id => pos and update edges
     %?dbg("Vmap: ~p~n",[array:to_orddict(Vmap)]),
-    Loops0 = build_vtx_loops(EdgeInfo, []),
-    L10 = [split_loop(Loop, Vmap, {We10,We20}) || Loop <- Loops0],
-    L20 = [split_loop(Loop, Vmap, {We20,We10}) || Loop <- Loops0],
+    Loops0 = build_vtx_loops(EdgeInfo, []), %% Figure out edge loops
+    L10 = [split_loop(Loop, Vmap, {We10,We20}) || Loop <- Loops0], % Split loops per We and precalc
+    L20 = [split_loop(Loop, Vmap, {We20,We10}) || Loop <- Loops0], % some data
+    %% Remove vertexes on triangulated edges
     Loops1 = [filter_tri_edges(Loop,We10,We20) || Loop <- lists:zip(L10,L20)],
     Loops = sort_largest(Loops1),
-    % io:format("~n~nLoops: ~p ~p~n~n",[length(Loops1),length(Loops)]),
+    %% Create vertices on the edge-loops
     #{el1:=Es11, el2:=Es21} = R0 = make_verts(Loops, Vmap, We10, We20),
     merge_2(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
 
+%% Continuing: multiple edge loops have hit the same face. It was
+%% really hard to handle that in one pass, since faces are split and
+%% moved.  Solved it by doing the intersection test again for the new
+%% faces and start over
 merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1,
           we2:=We21, el2:=Es2, fs2:=Fs2},We10,We20) ->
     {We1, Vmap1, B1} = remake_bvh(Fs1, We10, We11),
@@ -91,6 +96,8 @@ merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1,
             ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
             I11#{delete=>none, es:=[], error=>We2}
     end;
+%% All edge loops are in place, dissolve faces inside edge loops and
+%% merge the two we's
 merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2},
         #we{id=Id1}, #we{id=Id2}) ->
     try
@@ -125,6 +132,8 @@ remake_bvh(Fs0, We0, We1) ->
     {Vmap, Bvh} = make_bvh(gb_sets:to_list(Fs), We),
     {We, Vmap, Bvh}.
 
+%% Coplanar faces are often caused by bad triangulations of > 4-polygons
+%% tesselate the problematic faces (if they are > 4-gons)
 tesselate_and_restart(Coplanar, #we{id=Id1}=We1, We2) ->
     Count = fun({Id,Face}) ->
                     case Id =:= Id1 of
@@ -179,8 +188,9 @@ faces_in_region(ELs, We) ->
         false -> wings_edge:reachable_faces(Fs, Es, We)
     end.
 
+%% Weld
+%% Merge the two We's and bridge corresponding face-pairs
 weld(FsWes) ->
-    %% Store Fs1 and Fs2 in plugin so they are renumbered accordingly
     WeRs = [{We,[{face, Fs, unused}]} || {Fs,We} <- FsWes],
     {We0,[{face,Fs1,_},{face,Fs2,_}]} = wings_we:merge_root_set(WeRs),
     FacePairs = lists:zip(Fs1,Fs2),
@@ -304,8 +314,10 @@ make_edge_loop([#{op:=split_edge}=F|_]=Loop, Vmap, EL, IFs, We) ->
 make_edge_loop(Loop, Vmap, EL, IFs, We) ->
     %% Start with split_edge
     case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Loop) of
-        {FSs, []} -> split_face(FSs, Vmap, EL, We);
-        {FSs, Edges} -> make_edge_loop(Edges++FSs, Vmap, EL, IFs, We)
+        {FSs, []} -> %% No edges intersect, make a face inside the intersecting face
+            split_face(FSs, Vmap, EL, We);
+        {FSs, Edges} -> %% Connect edges and create new verts
+            make_edge_loop(Edges++FSs, Vmap, EL, IFs, We)
     end.
 
 make_edge_loop_1([V1], V1, Vmap, EL, IFs, We) ->
@@ -654,17 +666,13 @@ vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3},
               p2:={{_, {A2,B2}=Edge2},V0}},
             V0, Vmap, {#we{id=Id}=We,OWe}) ->
     if O1 =:= Id ->
-            ON = if O2=:=Id -> wings_face:normal(F3, OWe);
-                    true -> wings_face:normal(F2, OWe)
-                end,
+            ON = other_normal(O2,Id,F3,F2,OWe),
             Edge = wings_vertex:edge_through(A1,B1,F1,We),
             Fs = edge_faces(Edge,F1,We),
             SF=#{op=>split_edge, o=>Id, f=>F1, e=>Edge, v=>V0, vs=>Edge1, fs=>Fs, o_n=>ON},
 	    on_vertex(SF, Vmap);
        O2 =:= Id ->
-            ON = if O1=:=Id -> wings_face:normal(F3, OWe);
-                    true -> wings_face:normal(F1, OWe)
-                 end,
+            ON = other_normal(O1,Id,F3,F1,OWe),
             Edge = wings_vertex:edge_through(A2,B2,F2,We),
             Fs = edge_faces(Edge,F1,We),
             SF=#{op=>split_edge, o=>Id, f=>F2, e=>Edge, v=>V0, vs=>Edge2, fs=>Fs, o_n=>ON},
@@ -676,9 +684,7 @@ vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3},
 vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3}, p1:={{_, {A,B}=Edge0},V0}}, V0,
             Vmap, {#we{id=Id}=We,OWe}) ->
     if O1 =:= Id ->
-            ON = if O2=:=Id -> wings_face:normal(F3, OWe);
-                   true -> wings_face:normal(F2, OWe)
-                end,
+            ON = other_normal(O2,Id,F3,F2,OWe),
             Edge = wings_vertex:edge_through(A,B,F1,We),
             Fs = edge_faces(Edge,F1,We),
             SF=#{op=>split_edge, o=>Id, f=>F1, e=>Edge, v=>V0, vs=>Edge0, fs=>Fs, o_n=>ON},
@@ -693,9 +699,7 @@ vertex_info(#{mf1:={O1,F1}, mf2:={O2,F2}, other:={O3,F3}, p1:={{_, {A,B}=Edge0},
 vertex_info(#{mf2:={O1,F1}, mf1:={O2,F2}, other:={O3,F3}, p2:={{_, {A,B}=Edge0},V0}}, V0,
             Vmap, {#we{id=Id}=We,OWe}) ->
     if O1 =:= Id ->
-            ON = if O2=:=Id -> wings_face:normal(F3, OWe);
-                    true -> wings_face:normal(F2, OWe)
-                 end,
+            ON = other_normal(O2,Id,F3,F2,OWe),
             Edge = wings_vertex:edge_through(A,B,F1,We),
             Fs = edge_faces(Edge,F1,We),
             SF = #{op=>split_edge, o=>Id, f=>F1, e=>Edge, v=>V0, vs=>Edge0, fs=>Fs, o_n=>ON},
@@ -707,6 +711,11 @@ vertex_info(#{mf2:={O1,F1}, mf1:={O2,F2}, other:={O3,F3}, p2:={{_, {A,B}=Edge0},
             ON = wings_face:normal(F1, OWe),
             check_if_edge(#{op=>split_face, o=>Id, f=>F3, v=>V0, o_n=>ON}, Vmap, We)
     end.
+
+other_normal(Id,Id,F1,_F2,We) ->
+    wings_face:normal(F1, We);
+other_normal(_,_,_,F2,We) ->
+    wings_face:normal(F2, We).
 
 edge_faces(none,F1, _We) ->
     {F1,F1};
