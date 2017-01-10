@@ -13,10 +13,6 @@
 
 -module(wings_bool).
 -export([add/1]).
-
-%% wings_we:merge callbacks
--export([get_data/3, renumber/2, renumber/3, merge_we/1]).
-
 -include("wings.hrl").
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
@@ -103,7 +99,7 @@ merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2},
         DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
         DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
         try
-            {We,Es} = weld(DRes1, DRes2),
+            {We,Es} = weld([DRes1, DRes2]),
             [Del] = lists:delete(We#we.id, [Id1,Id2]),
             ok = wings_we_util:validate(We),
             #{es=>Es, we=>We, delete=>Del}
@@ -183,18 +179,19 @@ faces_in_region(ELs, We) ->
         false -> wings_edge:reachable_faces(Fs, Es, We)
     end.
 
-weld(FsWe10, FsWe20) ->
+weld(FsWes) ->
     %% Store Fs1 and Fs2 in plugin so they are renumbered accordingly
-    We0 = wings_we:merge(store_pst(FsWe10), store_pst(FsWe20)),
+    WeRs = [{We,[{face, Fs, unused}]} || {Fs,We} <- FsWes],
+    {We0,[{face,Fs1,_},{face,Fs2,_}]} = wings_we:merge_root_set(WeRs),
+    FacePairs = lists:zip(Fs1,Fs2),
     %?dbg("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
-    {Faces, We1} = get_pst(We0),
-    Weld = fun([F1,F2], WeAcc) -> do_weld(F1,F2,WeAcc) end,
-    {#we{es=Etab} = We2, Es} = lists:foldl(Weld, {We1,[]}, Faces),
+    Weld = fun({F1,F2}, WeAcc) -> do_weld(F1,F2,WeAcc) end,
+    {#we{es=Etab} = We1, Es} = lists:foldl(Weld, {We0,[]}, FacePairs),
     Borders = ordsets:intersection(ordsets:from_list(Es),
                                    wings_util:array_keys(Etab)),
-    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We2)),
-    Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We2) > 5],
-    We = wings_tesselation:quadrangulate(Fs, We2),
+    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We1)),
+    Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We1) > 5],
+    We = wings_tesselation:quadrangulate(Fs, We1),
     {We, Borders}.
 
 do_weld(Fa, Fb, {We0, Acc}) ->
@@ -207,7 +204,6 @@ do_weld(Fa, Fb, {We0, Acc}) ->
                    end
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
-
     %% Bridge and collapse new edges
     We1 = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
     Es = wings_we:new_items_as_ordset(edge, We0, We1),
@@ -221,41 +217,6 @@ order_loops([_]=Face, _We) ->
 order_loops(Fs, We) ->
     CFs = [{wings_face:center(Face,We), Face} || Face <- Fs],
     [Face || {_, Face} <- lists:sort(CFs)].
-
-store_pst({Fs, #we{pst=Pst0}=We}) ->
-    %?dbg("~p: ~w~n",[We#we.id, Fs]),
-    {Data, _} = lists:mapfoldl(fun(F, I) -> {{I, F},I+1} end, 0, Fs),
-    Pst = gb_trees:insert(?MODULE, gb_trees:from_orddict([{fs,Data}]), Pst0),
-    We#we{pst=Pst}.
-
-get_pst(#we{pst=Pst0}=We) ->
-    Faces = lists:sort(gb_trees:get(?MODULE, Pst0)),
-    Pst = gb_trees:delete(?MODULE, Pst0),
-    {Faces, We#we{pst=Pst}}.
-
-%% Pst callbacks
-get_data(save, PData, Acc) ->
-    FsInfo = gb_trees:get(fs,PData),
-    {ok, [{plugin, {?MODULE, {fs,FsInfo}}}|Acc]};
-get_data(_, _, Acc) -> Acc.
-
-renumber(get_elem, {_Id, Face}) -> Face.
-renumber(set_elem, {Id, _OldFace}, {value, NewFace}) ->
-    %?dbg("ReN ~p: ~w => ~w~n", [Id, _OldFace, NewFace]),
-    {Id, NewFace}.
-
-merge_we([_,_]=Wes) ->
-    try
-        Lists = [FaceInfo || #we{pst=Pst} <- Wes,
-                             FaceInfo <- gb_trees:get(fs, gb_trees:get(?MODULE, Pst))],
-        %?dbg("merge ~p~n",[Lists]),
-        Rel = sofs:relation(Lists, [{id,data}]),
-        Fam = sofs:relation_to_family(Rel),
-        %% we ignore to make a gb_tree here..
-        [Fs || {_, Fs} <- sofs:to_external(Fam)]
-    catch _:Reason ->
-            ?dbg("~p: ~p", [Reason, erlang:get_stacktrace()])
-    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 make_verts(Loops, Vmap, We10, We20) ->
