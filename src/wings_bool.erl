@@ -432,68 +432,71 @@ make_face_vs_1([#{op:=split_face,v:=V}|Ss], Edge, Vmap, EL, We0) ->
 make_face_vs_1([], _, Vmap, EL, We) ->
     {EL, Vmap, We}.
 
-split_face([#{v:=V1},#{v:=V2}|_]=Fs, Vmap, EL, We0) ->
+split_face(Fs, Vmap, EL, We0) ->
     Face = pick_ref_face(Fs, undefined),
     NumberOfNew = length(Fs),
     true = NumberOfNew > 2, %% Otherwise something is wrong
     We1 = wings_extrude_face:faces([Face], We0),
     FVs = wings_face:vertices_ccw(Face, We1),
-    [P1,P2|_] = FPos = wings_face:vertex_positions(Face, We1),
-    Zipped = lists:zip(FVs, FPos),
+    FPos = wings_face:vertex_positions(Face, We1),
     NumberOfOld = length(FVs),
     if
 	NumberOfOld =:= NumberOfNew ->
-	    %?dbg("~p ~n",[Zipped]),
-	    KD3 = e3d_kd3:from_list(Zipped),
-	    Center = e3d_vec:average(FPos),
-	    %?dbg("~p ~p~n", [Center, FPos]),
-	    D1 = e3d_vec:normal(P1,P2,Center),
-	    P3 = vmap_pos(V1, Vmap),
-	    P4 = vmap_pos(V2, Vmap),
-	    D2 = e3d_vec:normal(P3,P4,Center),
-	    %io:format("~p ~p => ~p~n", [D1,D2,e3d_vec:dot(D1,D2)]),
-	    Ordered = case e3d_vec:dot(D1,D2) > 0 of
-			  true -> FVs;
-			  false -> lists:reverse(FVs)
-		      end,
-	    {{First,_}, _} = e3d_kd3:take_nearest(P3, KD3),
-	    %?dbg("Search ~p~n", [P3]),
-	    {VL1,VL2} = lists:splitwith(fun(V) when V =:= First -> false; (_) -> true end,
-					Ordered),
-	    PosL = [vmap_pos(Vi, Vmap)|| #{v:=Vi} <- Fs],
-	    %?dbg("~w ~w ~p~n",[First,VL2++VL1,PosL]),
-	    Vs = lists:zip(VL2++VL1, PosL),
-	    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
-			       We1#we.vp, Vs),
-            cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We1#we{vp=Vtab});
+            split_face_equal(Face, FVs, FPos, Fs, Vmap, EL,We1);
 	NumberOfOld > NumberOfNew ->
-	    KD3 = e3d_kd3:from_list(Zipped),
-	    {Vs,_} = lists:mapfoldl(fun(#{v:=Vi}, Tree0) ->
-					    Pos = vmap_pos(Vi, Vmap),
-					    {{V,_}, Tree} = e3d_kd3:take_nearest(Pos, Tree0),
-					    {{V,Pos},Tree}
-				    end, KD3, Fs),
-	    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
-			       We1#we.vp, Vs),
-            cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We1#we{vp=Vtab});
+            split_face_less(Face, FVs, FPos, Fs, Vmap, EL,We1);
 	true ->
-	    KD3 = e3d_kd3:from_list([{FS, vmap_pos(Vi, Vmap)} || #{v:=Vi}=FS <- Fs]),
-	    {Vs,_} = lists:mapfoldl(fun({V, Old}, Tree0) ->
-					    {{FS,Pos}, Tree} = e3d_kd3:take_nearest(Old, Tree0),
-					    {{V,Pos,FS},Tree}
-				    end, KD3, Zipped),
-	    Vtab = lists:foldl(fun({V, Pos, _}, Vtab) -> array:set(V, Pos, Vtab) end,
-			       We1#we.vp, Vs),
-	    Fs1 = lists:map(fun(FS) -> case lists:keyfind(FS, 3, Vs) of
-					   false -> FS;
-					   {_,_,_} -> FS#{op:=split_edge, o_n=>ignore}
-				       end
-			    end, Fs),
-	    Vmap1 = lists:foldl(fun({V, _, #{v:=Vi}}, Map) -> array:set(Vi, V, Map) end,
-				Vmap, Vs),
-	    {Es,_,Vmap2,We} = make_edge_loop(Fs1, Vmap1, EL, [], We1#we{vp=Vtab}),
-            {Es,[Face],Vmap2,We}
+            split_face_more(Face, FVs, FPos, Fs, Vmap, EL,We1)
     end.
+
+split_face_equal(Face, FVs, [P1,P2|_] = FPos, [#{v:=V1},#{v:=V2}|_]=Fs, Vmap, EL, We) ->
+    KD3 = e3d_kd3:from_list(lists:zip(FVs, FPos)),
+    P3 = vmap_pos(V1, Vmap),
+    P4 = vmap_pos(V2, Vmap),
+    Center = e3d_vec:average(FPos),
+    D1 = e3d_vec:normal(P1,P2,Center),
+    D2 = e3d_vec:normal(P3,P4,Center),
+    Ordered = case e3d_vec:dot(D1,D2) > 0 of
+                  true -> FVs;
+                  false -> lists:reverse(FVs)
+              end,
+    {{First,_}, _} = e3d_kd3:take_nearest(P3, KD3),
+    {VL1,VL2} = lists:splitwith(fun(V) when V =:= First -> false; (_) -> true end,
+                                Ordered),
+    PosL = [vmap_pos(Vi, Vmap)|| #{v:=Vi} <- Fs],
+    Vs = lists:zip(VL2++VL1, PosL),
+    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
+                       We#we.vp, Vs),
+    cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We#we{vp=Vtab}).
+
+split_face_less(Face, FVs, FPos, Fs, Vmap, EL, We) ->
+    KD3 = e3d_kd3:from_list(lists:zip(FVs, FPos)),
+    {Vs,_} = lists:mapfoldl(fun(#{v:=Vi}, Tree0) ->
+                                    Pos = vmap_pos(Vi, Vmap),
+                                    {{V,_}, Tree} = e3d_kd3:take_nearest(Pos, Tree0),
+                                    {{V,Pos},Tree}
+                            end, KD3, Fs),
+    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
+                       We#we.vp, Vs),
+    cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We#we{vp=Vtab}).
+
+split_face_more(Face, FVs, FPos, Fs, Vmap, EL,We1) ->
+    KD3 = e3d_kd3:from_list([{FS, vmap_pos(Vi, Vmap)} || #{v:=Vi}=FS <- Fs]),
+    {Vs,_} = lists:mapfoldl(fun({V, Old}, Tree0) ->
+                                    {{FS,Pos}, Tree} = e3d_kd3:take_nearest(Old, Tree0),
+                                    {{V,Pos,FS},Tree}
+                            end, KD3, lists:zip(FVs, FPos)),
+    Vtab = lists:foldl(fun({V, Pos, _}, Vtab) -> array:set(V, Pos, Vtab) end,
+                       We1#we.vp, Vs),
+    Fs1 = lists:map(fun(FS) -> case lists:keyfind(FS, 3, Vs) of
+                                   false -> FS;
+                                   {_,_,_} -> FS#{op:=split_edge, o_n=>ignore}
+                               end
+                    end, Fs),
+    Vmap1 = lists:foldl(fun({V, _, #{v:=Vi}}, Map) -> array:set(Vi, V, Map) end,
+                        Vmap, Vs),
+    {Es,_,Vmap2,We} = make_edge_loop(Fs1, Vmap1, EL, [], We1#we{vp=Vtab}),
+    {Es,[Face],Vmap2,We}.
 
 cleanup_edges(FVs, Used, Face, EL0, Vmap, We) ->
     %% Start with a used vertex
