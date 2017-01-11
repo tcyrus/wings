@@ -12,7 +12,7 @@
 %%
 
 -module(wings_bool).
--export([add/1]).
+-export([add/1,isect/1]).
 -include("wings.hrl").
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
@@ -20,8 +20,10 @@
 -ifdef(DEBUG).
 -define(DBG_TRY(Do,Err),
         try Do
-        catch _:__R ->
+        catch error:__R ->
                 ?dbg("ERROR: ~p:~n ~P~n", [__R, erlang:get_stacktrace(), 20]),
+                Err;
+              exit:_ ->
                 Err
         end).
 -else.
@@ -29,8 +31,15 @@
 -endif.
 
 
-add(#st{shapes=Sh0}=St0) ->
-    Map = fun(_, We) -> init_isect(We) end,
+add(St0) ->
+    Map = fun(_, We) -> init_isect(We, add) end,
+    do_bool(St0, Map).
+
+isect(St0) ->
+    Map = fun(_, We) -> init_isect(We, isect) end,
+    do_bool(St0, Map).
+
+do_bool(#st{shapes=Sh0}=St0, Map) ->
     Reduce = fun find_intersect/2,
     {_, Merged} = wings_sel:dfold(Map, Reduce, {[], []}, St0),
     %% This could be done in Reduce but would need St in Acc is that ok?
@@ -64,14 +73,14 @@ find_intersect(_Head, [], _) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-merge_0(EdgeInfo0, #{we:=We10}=I1, #{we:=We20}=I2) ->
+merge_0(EdgeInfo0, I1, I2) ->
     EdgeInfo = [remap(Edge, I1, I2) || Edge <- EdgeInfo0],
     case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
         [] -> merge_1(EdgeInfo, I1, I2);
-        Coplanar -> tesselate_and_restart(Coplanar, We10, We20)
+        Coplanar -> tesselate_and_restart(Coplanar, I1, I2)
     end.
 
-merge_1(EdgeInfo0, #{we:=We10,es:=Es10}, #{we:=We20,es:=Es20}) ->
+merge_1(EdgeInfo0, #{we:=We10,es:=Es10,op:=Op1}, #{we:=We20,es:=Es20,op:=Op2}) ->
     {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),  %% Make vertex id => pos and update edges
     %?dbg("Vmap: ~p~n",[array:to_orddict(Vmap)]),
     Loops0 = build_vtx_loops(EdgeInfo, []), %% Figure out edge loops
@@ -82,31 +91,32 @@ merge_1(EdgeInfo0, #{we:=We10,es:=Es10}, #{we:=We20,es:=Es20}) ->
     Loops = sort_largest(Loops1),
     %% Create vertices on the edge-loops
     #{el1:=Es11, el2:=Es21} = R0 = make_verts(Loops, Vmap, We10, We20),
-    merge_2(R0#{el1:=Es11++Es10, el2:=Es21++Es20},We10,We20).
+    merge_2(R0#{el1:=Es11++Es10, el2:=Es21++Es20, op1=>Op1, op2=>Op2},We10,We20).
 
 %% Continuing: multiple edge loops have hit the same face. It was
 %% really hard to handle that in one pass, since faces are split and
 %% moved.  Solved it by doing the intersection test again for the new
 %% faces and start over
-merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1,
+merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1, op1:=Op1, op2:=Op2,
           we2:=We21, el2:=Es2, fs2:=Fs2},We10,We20) ->
     {We1, Vmap1, B1} = remake_bvh(Fs1, We10, We11),
     {We2, Vmap2, B2} = remake_bvh(Fs2, We20, We21),
     EI0 = e3d_bvh:intersect(B1, B2),
-    I11 = #{we=>We1,map=>Vmap1,es=>Es1},
-    I21 = #{we=>We2,map=>Vmap2,es=>Es2},
+    I11 = #{we=>We1,map=>Vmap1,es=>Es1, op=>Op1},
+    I21 = #{we=>We2,map=>Vmap2,es=>Es2, op=>Op2},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     %% We should crash if we have coplanar faces in this step
     ?DBG_TRY(merge_1(EI,I11,I21), #{we=>We1,delete=>none, es=>[], error=>We2});
 %% All edge loops are in place, dissolve faces inside edge loops and
 %% merge the two we's
-merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2},
+merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2, op1:=Op1, op2:=Op2},
         #we{id=Id1}, #we{id=Id2}) ->
-    %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
-    %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
-    DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
-    DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
+    %?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
+    ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
+    DRes1 = dissolve_faces_in_edgeloops(Es1, Op1, We1),
+    DRes2 = dissolve_faces_in_edgeloops(Es2, Op2, We2),
     Weld = fun() ->
+%%                   exit(foo),
                    {We,Es} = weld([DRes1, DRes2]),
                    [Del] = lists:delete(We#we.id, [Id1,Id2]),
                    ok = wings_we_util:validate(We),
@@ -129,7 +139,7 @@ remake_bvh(Fs0, We0, We1) ->
 
 %% Coplanar faces are often caused by bad triangulations of > 4-polygons
 %% tesselate the problematic faces (if they are > 4-gons)
-tesselate_and_restart(Coplanar, #we{id=Id1}=We1, We2) ->
+tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1}, #{we:=We2,op:=Op2}) ->
     Count = fun({Id,Face}) ->
                     case Id =:= Id1 of
                         true -> wings_face:vertices(Face, We1);
@@ -151,8 +161,8 @@ tesselate_and_restart(Coplanar, #we{id=Id1}=We1, We2) ->
     {Vmap1, B1} = make_bvh(We10),
     {Vmap2, B2} = make_bvh(We20),
     EI0 = e3d_bvh:intersect(B1, B2),
-    I11 = #{we=>We10,map=>Vmap1,es=>[]},
-    I21 = #{we=>We20,map=>Vmap2,es=>[]},
+    I11 = #{we=>We10,map=>Vmap1,es=>[],op=>Op1},
+    I21 = #{we=>We20,map=>Vmap2,es=>[],op=>Op2},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
 
@@ -166,9 +176,14 @@ tesselate([], We1, We2) ->
     {We1,We2}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-dissolve_faces_in_edgeloops(Es, #we{fs=_Ftab} = We0) ->
-    Fs = faces_in_region(Es, We0),
-    We = wings_dissolve:faces(Fs, We0),
+dissolve_faces_in_edgeloops(Es, Op, #we{fs=Ftab} = We0) ->
+    Fs0 = faces_in_region(Es, We0),
+    We = case Op of
+             add -> wings_dissolve:faces(Fs0, We0);
+             isect ->
+                 Fs = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)), Fs0),
+                 wings_dissolve:faces(Fs, We0)
+         end,
     Faces = wings_we:new_items_as_ordset(face, We0, We),
     {order_loops(Faces, We),We}.
 
@@ -340,8 +355,10 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
             {EL1,Vmap1,We2} = make_face_vs(FSs, V1, Edge, Vmap, We1),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, Face++IFs, We2);
         [{Edge,_F1,_F2}] ->
-            %% ?dbg("Ignore ~w ~w edge ~p~n",[maps:get(v,V1),maps:get(v,V2),Edge]),
-            {EL1,Vmap1,We} = make_face_vs(FSs, V1, Edge, Vmap, We0),
+            ?dbg("Ignore: ~w: ~w ~w edge ~p~n",[We0#we.id, maps:get(v,V1),maps:get(v,V2),Edge]),
+            {EL1,Vmap1,We1} = make_face_vs(FSs, V1, Edge, Vmap, We0),
+            {{We, _}, _} = connect_verts(V1,V2,Vmap,We1),
+            ?dbg("Connect failed: ~p~n",[We=:=We1]),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, IFs, We)
     end.
 
@@ -363,7 +380,7 @@ connect_verts(V1, V2, RefPoints, Vmap, #we{vp=Vtab}=We) ->
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), [Face]}
             end;
         Edge when RefPoints =:= [] ->
-            %% ?dbg("Skip ~p ~p~n",[Edge,Face]),
+            ?dbg("Skip ~p ~p~n",[Edge,Face]),
             {{We, Edge}, []}
     end.
 
@@ -371,10 +388,7 @@ pick_face([], #{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, Vmap, We) ->
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     true = is_integer(WeV1), true = is_integer(WeV2), %% Assert
-    OtherN = case e3d_vec:norm(e3d_vec:average(N1,N2)) of
-                 {0.0,0.0,0.0} -> error({N1,N2});
-                 ON -> ON
-             end,
+    OtherN = e3d_vec:norm(e3d_vec:average(N1,N2)),
     case [Face || {Face, [_,_]} <- wings_vertex:per_face([WeV1,WeV2],We)] of
         [Face] ->
             {WeV1,WeV2,Face,OtherN};
@@ -497,7 +511,7 @@ split_face_more(Face, FVs, FPos, Fs, Vmap, EL,We1) ->
                        We1#we.vp, Vs),
     Fs1 = lists:map(fun(FS) -> case lists:keyfind(FS, 3, Vs) of
                                    false -> FS;
-                                   {_,_,_} -> FS#{op:=split_edge, o_n=>ignore}
+                                   {_,_,_} -> FS#{op:=split_edge, o_n=>{0.0,0.0,0.0}}
                                end
                     end, Fs),
     Vmap1 = lists:foldl(fun({V, _, #{v:=Vi}}, Map) -> array:set(Vi, V, Map) end,
@@ -719,6 +733,7 @@ edge_faces(Edge,_F1, #we{es=Etab}) ->
     {LF,RF}.
 
 check_if_edge(#{f:=F, v:=V}=SF, Vmap, #we{id=Id, vp=Vtab, es=Etab}=We) ->
+    ?dbg("SF ~p~n",[SF]),
     {Where, Pos} = array:get(V, Vmap),
     Find = fun(_,Edge,#edge{vs=V1,ve=V2},Acc) ->
                    V1P = array:get(V1, Vtab),
@@ -748,9 +763,9 @@ on_vertex(#{o:=Id, v:=V}=SF, Vmap) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init_isect(#we{id=Id}=We0) ->
+init_isect(#we{id=Id}=We0, Op) ->
     {Ts, Bvh} = make_bvh(We0),
-    #{id=>Id,map=>Ts,bvh=>Bvh,es=>[],we=>We0}.
+    #{id=>Id,map=>Ts,bvh=>Bvh,es=>[],we=>We0, op=>Op}.
 
 make_bvh(#we{fs=Fs0}=We) ->
     make_bvh(gb_trees:keys(Fs0), We).
