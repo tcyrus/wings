@@ -16,12 +16,24 @@
 -include("wings.hrl").
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
+-define(DEBUG,1).
+-ifdef(DEBUG).
+-define(DBG_TRY(Do,Err),
+        try Do
+        catch _:__R ->
+                ?dbg("ERROR: ~p:~n ~P~n", [__R, erlang:get_stacktrace(), 20]),
+                Err
+        end).
+-else.
+-define(DBG_TRY(Do,Err), Do).
+-endif.
+
 
 add(#st{shapes=Sh0}=St0) ->
-    MapBvh = wings_sel:fold(fun make_bvh/3, [], St0),
-    IntScts = find_intersects(MapBvh, MapBvh, []),
-    Sel = [{Id,gb_sets:from_list(Es)} || #{we:=#we{id=Id}, es:=Es} <- IntScts],
-    %% ?dbg("~p~n", [Sel2]),
+    Map = fun(_, We) -> init_isect(We) end,
+    Reduce = fun find_intersect/2,
+    {_, Merged} = wings_sel:dfold(Map, Reduce, {[], []}, St0),
+    %% This could be done in Reduce but would need St in Acc is that ok?
     Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}=MI, Sh) ->
 		  Sh1 = gb_trees:update(Id, We, gb_trees:delete_any(Del, Sh)),
                   case maps:get(error, MI, undefined) of
@@ -30,31 +42,25 @@ add(#st{shapes=Sh0}=St0) ->
                           gb_trees:update(IdDbg, WeDbg, Sh1)
                   end
 	  end,
-    Sh = lists:foldl(Upd, Sh0, IntScts),
+    Sh = lists:foldl(Upd, Sh0, Merged),
+    Sel = [{Id,gb_sets:from_list(Es)} || #{we:=#we{id=Id}, es:=Es} <- Merged],
     wings_sel:set(edge, Sel, St0#st{shapes=Sh}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-find_intersects([Head|Tail], [_|_] = Alts, Acc) ->
-    case find_intersect(Head, Alts) of
-	false ->
-	    find_intersects(Tail,Alts, Acc);
-	{H1,Merge} ->
-	    NewTail = remove(H1, Head, Tail),
-	    NewAlts = remove(H1, Head, Alts),
-	    find_intersects(NewTail, NewAlts, [Merge|remove(Head,Acc)])
-    end;
-find_intersects(_, _, Acc) -> lists:reverse(Acc).
+find_intersect(Bvh, {Bvhs0, Merged}) ->
+    case find_intersect(Bvh, Bvhs0, []) of
+        none -> {[Bvh|Bvhs0], Merged};
+        {We, Bvhs} -> {Bvhs, [We|Merged]}
+    end.
 
-find_intersect(#{id:=Id}=Head, [#{id:=Id}|Rest]) ->
-    find_intersect(Head, Rest);
-find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest]) ->
+find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest], Tested) ->
     case e3d_bvh:intersect(B1, B2) of
-	[] ->  find_intersect(Head,Rest);
-	EdgeInfo -> {H1, merge_0(EdgeInfo, Head, H1)}
+	[] ->  find_intersect(Head,Rest,[H1|Tested]);
+	EdgeInfo -> {merge_0(EdgeInfo, Head, H1), Rest ++ Tested}
     end;
-find_intersect(_Head, []) ->
-    false.
+find_intersect(_Head, [], _) ->
+    none.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -89,35 +95,24 @@ merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1,
     EI0 = e3d_bvh:intersect(B1, B2),
     I11 = #{we=>We1,map=>Vmap1,es=>Es1},
     I21 = #{we=>We2,map=>Vmap2,es=>Es2},
-    try
-        EI = [remap(Edge, I11, I21) || Edge <- EI0],
-        merge_1(EI,I11,I21) %% We should crash if we have coplanar faces in this step
-    catch _:Reason ->
-            ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
-            I11#{delete=>none, es:=[], error=>We2}
-    end;
+    EI = [remap(Edge, I11, I21) || Edge <- EI0],
+    %% We should crash if we have coplanar faces in this step
+    ?DBG_TRY(merge_1(EI,I11,I21), #{we=>We1,delete=>none, es=>[], error=>We2});
 %% All edge loops are in place, dissolve faces inside edge loops and
 %% merge the two we's
 merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2},
         #we{id=Id1}, #we{id=Id2}) ->
-    try
-        %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
-        %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
-        DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
-        DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
-        try
-            {We,Es} = weld([DRes1, DRes2]),
-            [Del] = lists:delete(We#we.id, [Id1,Id2]),
-            ok = wings_we_util:validate(We),
-            #{es=>Es, we=>We, delete=>Del}
-        catch _:Reason ->
-                ?dbg("ERROR: ~p:~n ~P~n", [Reason, erlang:get_stacktrace(), 20]),
-                #{we=>element(2, DRes1),delete=>none, es=>[], error=>element(2, DRes2)}
-        end
-    catch _:Reason2 ->
-            ?dbg("ERROR: ~p:~n ~P~n", [Reason2, erlang:get_stacktrace(), 20]),
-            #{we=>We1,delete=>none, es=>[], error=>We2}
-    end.
+    %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
+    %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
+    DRes1 = dissolve_faces_in_edgeloops(Es1, We1),
+    DRes2 = dissolve_faces_in_edgeloops(Es2, We2),
+    Weld = fun() ->
+                   {We,Es} = weld([DRes1, DRes2]),
+                   [Del] = lists:delete(We#we.id, [Id1,Id2]),
+                   ok = wings_we_util:validate(We),
+                   #{es=>Es, we=>We, delete=>Del}
+           end,
+    ?DBG_TRY(Weld(), #{we=>element(2, DRes1),delete=>none, es=>[], error=>element(2, DRes2)}).
 
 sort_largest(Loops) ->
     OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
@@ -753,9 +748,9 @@ on_vertex(#{o:=Id, v:=V}=SF, Vmap) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-make_bvh(_, #we{id=Id}=We0, Bvhs) ->
+init_isect(#we{id=Id}=We0) ->
     {Ts, Bvh} = make_bvh(We0),
-    [#{id=>Id,map=>Ts,bvh=>Bvh,es=>[],we=>We0}|Bvhs].
+    #{id=>Id,map=>Ts,bvh=>Bvh,es=>[],we=>We0}.
 
 make_bvh(#we{fs=Fs0}=We) ->
     make_bvh(gb_trees:keys(Fs0), We).
@@ -809,13 +804,6 @@ vmap_pos(N, Vmap) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-remove(#{id:=Id}, List) ->
-    Map = mapsfind(Id, id, List),
-    lists:delete(Map, List).
-
-remove(H1, H2, List) ->
-    remove(H1, remove(H2, List)).
-
 remap(#{mf1:=MF10,mf2:=MF20,p1:={Pos1,E11,E12}, p2:= {Pos2, E21, E22}, other:=Other},
       #{we:=#we{id=Id1},map:=M1}, #{we:=#we{id=Id2},map:=M2}) ->
     MF1 = remap_1(MF10, Id1, M1, Id2, M2),
@@ -841,14 +829,6 @@ remap_1({Id, TriFace}, _Id, _M1, Id, M2) ->
 
 order(V1, V2) when V1 < V2 ->  {V1,V2};
 order(V2, V1) -> {V1,V2}.
-
-%% Use wings_util:mapsfind
-mapsfind(Value, Key, [H|T]) ->
-    case H of
-	#{Key:=Value} -> H;
-	_ -> mapsfind(Value, Key, T)
-    end;
-mapsfind(_, _, []) -> false.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
