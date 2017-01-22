@@ -128,6 +128,11 @@ clear_sel() ->
 
 clear_sel(D, _) -> D#dlo{sel=none}.
 
+reset(#ss{selmodes=Modes}, #st{selmode=Mode}=St0) ->
+    St = wings_sel:set(Mode, [], St0),
+    Sh = 1 =:= length(Modes),
+    St#st{sh=Sh}.
+
 %%%
 %%% Event handler for secondary selection mode.
 %%%
@@ -142,7 +147,7 @@ handle_event({ask_init,Do,Done}, #ss{selmodes=Modes}=Ss,
     wings_dl:map(fun(#dlo{orig_sel=none,sel=Dlist}=D, _) ->
 			 D#dlo{orig_sel=Dlist,orig_mode=Mode}
 		 end, []),
-    St = wings_sel:reset(mode_restriction(Modes, St0)),
+    St = reset(Ss, mode_restriction(Modes, St0)),
     pick_next(Do, Done, Ss, St);
 handle_event(Event, Ss, St) ->
     case wings_camera:event(Event, St) of
@@ -288,7 +293,7 @@ pick_next_1([{Fun0,Desc}|More], Done, Ss, St) when is_function(Fun0) ->
 		       Other -> Other
 		     end
 	  end,
-    get_event(Ss#ss{f=Fun,is_axis=false,vec=none,info=""}, wings_sel:reset(St));
+    get_event(Ss#ss{f=Fun,is_axis=false,vec=none,info=""}, reset(Ss,St));
 pick_next_1([{Type,Desc}|More], Done, Ss, St0) ->
     MagnetPossible = magnet_possible_now(More, Ss),
     Check = case Type of
@@ -322,7 +327,7 @@ pick_next_1([{Type,Desc}|More], Done, Ss, St0) ->
 	     _ -> St0
 	 end,
     clear_sel(),
-    get_event(Ss#ss{f=Fun,is_axis=IsAxis,vec=none,info=""}, wings_sel:reset(St)).
+    get_event(Ss#ss{f=Fun,is_axis=IsAxis,vec=none,info=""}, reset(Ss,St)).
 
 redraw(#ss{info=Info,f=Message,vec=Vec}=Ss, St) ->
     Message(message, right_message(Ss)),
