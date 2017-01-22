@@ -291,7 +291,7 @@ weld(FsWes) ->
     BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We1)),
     Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We1) > 5],
     We = wings_tesselation:quadrangulate(Fs, We1),
-    {We, Borders}.
+    {wings_facemat:gc(We), Borders}.
 
 do_weld(Fa, Fb, {We0, Acc}) ->
     [Va|_] = wings_face:vertices_ccw(Fa, We0),
