@@ -28,6 +28,10 @@ init() ->
     Programs =
         [{1, make_prog(camera_light, "Two Camera Lights")},
          {2, make_prog(hemilight, HL, "Hemispherical Lighting")},
+         {ambient_light, make_prog(ambient_light, "")},
+         {infinite_light, make_prog(infinite_light, "")},
+         {point_light, make_prog(point_light, "")},
+         {spot_light, make_prog(spot_light, "")},
          {envmap, make_prog(envmap, "Environment Mapping")}
          %% {make_prog("gooch"), "Gooch Tone"},
          %% {make_prog("toon"), "Toon"},
