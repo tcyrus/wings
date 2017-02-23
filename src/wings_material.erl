@@ -395,44 +395,22 @@ apply_material(Name, Mtab, ActiveVertexColors) when is_atom(Name) ->
     Shine = prop_get(shininess, OpenGL)*128,
     gl:materialf(?GL_FRONT_AND_BACK, ?GL_SHININESS, Shine),
     gl:materialfv(?GL_FRONT_AND_BACK, ?GL_EMISSION, prop_get(emission, OpenGL)),
-    Maps0 = prop_get(maps, Mat, []),
     VertexColors = case ActiveVertexColors of
 		       false -> ignore;
 		       true -> prop_get(vertex_colors, OpenGL, ignore)
 		   end,
-    Def = fun() -> ok end,
-    {Maps,DeApply} =
-	case VertexColors of
-	    ignore ->
-		%% Ignore vertex colors. If the hemispherical lighting
-		%% shader is enabled, it is not enough to only disable
-		%% COLOR_MATERIAL, but we must also disable the color
-		%% array.
-		gl:disable(?GL_COLOR_MATERIAL),
-		case ActiveVertexColors of
-		    true ->
-			{Maps0,fun() ->
-				       gl:enableClientState(?GL_COLOR_ARRAY)
-			       end};
-		    false ->
-			{Maps0,Def}
-		   end;
-	    set ->
-		%% Vertex colors overrides diffuse and ambient color
-		%% and suppresses any texture.
-		gl:colorMaterial(?GL_FRONT_AND_BACK, ?GL_AMBIENT_AND_DIFFUSE),
-		gl:enable(?GL_COLOR_MATERIAL),
-		{[],Def};
-	    multiply ->
-		%% Vertex colors are multiplied with the texture.
-		gl:colorMaterial(?GL_FRONT_AND_BACK, ?GL_AMBIENT_AND_DIFFUSE),
-		gl:enable(?GL_COLOR_MATERIAL),
-		{Maps0,Def}
-	end,
+    DeApply = case VertexColors of
+                  ignore when ActiveVertexColors ->
+                      gl:disableClientState(?GL_COLOR_ARRAY),
+                      fun() -> gl:enableClientState(?GL_COLOR_ARRAY) end;
+                  _ ->
+                      fun() -> ok end
+              end,
     gl:materialfv(?GL_FRONT_AND_BACK, ?GL_DIFFUSE, prop_get(diffuse, OpenGL)),
     gl:materialfv(?GL_FRONT_AND_BACK, ?GL_AMBIENT, prop_get(ambient, OpenGL)),
+    Maps = prop_get(maps, Mat, []),
     apply_texture(prop_get(diffuse, Maps, false)),
-    apply_normal_map(get_normal_map(Maps0)),  %% Combine with vertex colors
+    apply_normal_map(get_normal_map(Maps)),  %% Combine with vertex colors
     DeApply.
 
 enable(true)  -> 1;
