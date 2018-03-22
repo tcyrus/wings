@@ -720,7 +720,7 @@ make_mat(#{name:=Name}=Mat, GLTF) ->
                Maps0 -> [{maps, Maps0}]
            end,
     DiffuseC = list_to_tuple(Diffuse),
-    Specular = wings_color:mix(MetalF, DiffuseC, {0.8,0.8,0.8,0.8}),
+    Specular = wings_color:mix(MetalF, DiffuseC, {0.08,0.08,0.08,1.0}),
     DefList = [{diffuse, DiffuseC},
                {ambient, {0.0,0.0,0.0,0.0}},
                {specular, Specular},
