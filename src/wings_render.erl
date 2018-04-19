@@ -50,7 +50,7 @@ render(#st{selmode=Mode}=St) ->
     show_saved_bb(St),
     show_bb_center(St),
     user_clipping_planes(on),
-    render_objects(Mode, PM, SceneLights),
+    render_objects(Mode, PM, MM, SceneLights),
     user_clipping_planes(off),
     axis_letters(PM,MM,Yon),
     show_camera_image_plane(),
@@ -114,18 +114,21 @@ setup_scene_lights(true, Lights, RS0) ->
     {Amb0, SL} = wings_light:global_lights(Lights),
     case Amb0 of
         [] ->
-            gl:lightModelfv(?GL_LIGHT_MODEL_AMBIENT, {0.0,0.0,0.0,1.0}),
-            RS = wings_shaders:use_prog(ambient_light, RS0),
+            %% Must render all objects black first otherwise we blend with bg
+            RS1 = wings_shaders:use_prog(ambient_light, RS0),
+            RS2  = wings_shaders:set_uloc(light_diffuse, {0.0,0.0,0.0,1.0}, RS1),
+            RS  = wings_shaders:set_uloc(ws_eyepoint, wings_view:eye_point(), RS2),
             {SL, RS};
         [Amb|RestAmb] ->
-            RS = wings_light:setup_light(Amb, RS0),
+            RS1 = wings_light:setup_light(Amb, RS0),
+            RS  = wings_shaders:set_uloc(ws_eyepoint, wings_view:eye_point(), RS1),
             {RestAmb ++ SL, RS}
     end.
 
-render_objects(Mode, PM, UseSceneLights) ->
+render_objects(Mode, PM, MM, UseSceneLights) ->
     Dls = wings_dl:display_lists(),
     {Open,Closed,Lights} = split_objects(Dls, [], [], []),
-    RS0 = #{},
+    RS0 = #{eyepoint => e3d_mat:mul_point(e3d_transform:inv_matrix(MM), {0.0,0.0,0.0})},
     RS1 = render_lights(Lights, RS0),
     {SL, RS2} = setup_scene_lights(UseSceneLights, Lights, RS1),
     case wings_wm:get_prop(workmode) of
@@ -148,7 +151,7 @@ render_objects(Mode, PM, UseSceneLights) ->
     end.
 
 render_lights(Lights, RS0) ->
-    RS1 = wings_shaders:use_prog(1, RS0),
+    RS1 = wings_shaders:use_prog(2, RS0),
     gl:color4ub(255, 255, 255, 255),
     RS = render_work_objects_0(Lights, false, RS1),
     gl:color4ub(255, 255, 255, 255),
@@ -284,7 +287,8 @@ render_lighted(Faces, ambient, RS) ->
     wings_dl:call(Faces, RS);
 render_lighted(Faces, Lights, RS0) ->
     Do = fun(Light, RS1) ->
-                 RS = wings_light:setup_light(Light, RS1),
+                 RS2 = wings_light:setup_light(Light, RS1),
+                 RS = wings_shaders:set_uloc(ws_eyepoint, maps:get(eyepoint, RS0), RS2),
                  wings_dl:call(Faces, RS)
          end,
     foldl(Do, RS0, Lights).
@@ -293,7 +297,7 @@ enable_lighting(false, #{}=RS0) ->
     Lighting = wings_pref:get_value(number_of_lights),
     gl:color4ub(255, 255, 255, 255), %% Needed when vertex colors are not set
     RS = wings_shaders:use_prog(Lighting, RS0),
-    wings_shaders:set_uloc(ws_eyepoint, wings_view:eye_point(), RS);
+    wings_shaders:set_uloc(ws_eyepoint, maps:get(eyepoint, RS0), RS);
 enable_lighting(ambient, RS) ->
     RS;
 enable_lighting(_, RS) ->

@@ -306,13 +306,8 @@ set_uloc(Pos, {A,B,C}) when is_float(A),is_float(B),is_float(C) ->
 set_uloc(Pos, {A,B,C,D}) when is_float(A),is_float(B),is_float(C) ->
     gl:uniform4f(Pos,A,B,C,D).
 
-compile(vertex, Bin) when is_binary(Bin) ->
-    compile2(?GL_VERTEX_SHADER, "Vertex", Bin);
-compile(fragment, Bin) when is_binary(Bin) ->
-    compile2(?GL_FRAGMENT_SHADER, "Fragment", Bin).
-
-compile2(Type,Str,Src) ->
-    Handle = gl:createShader(Type),
+compile(Type, Src) when is_binary(Src) ->
+    Handle = gl:createShader(glType(Type)),
     ok = gl:shaderSource(Handle, [Src]),
     ok = gl:compileShader(Handle),
     case gl:getShaderiv(Handle, ?GL_COMPILE_STATUS) of
@@ -320,10 +315,13 @@ compile2(Type,Str,Src) ->
         ?GL_FALSE ->
             BufSize = gl:getShaderiv(Handle, ?GL_INFO_LOG_LENGTH),
             ErrorStr = gl:getShaderInfoLog(Handle, BufSize),
-            io:format("Error: in ~p shader~n: ~s~n",[Str, ErrorStr]),
+            io:format("Error: in ~p shader~n: ~s~n",[Type, ErrorStr]),
             gl:deleteShader(Handle),
-            throw("Compilation failed")
+            throw({Type, "Compilation failed"})
     end.
+
+glType(vertex) -> ?GL_VERTEX_SHADER;
+glType(fragment) -> ?GL_FRAGMENT_SHADER.
 
 link_prog(Objs) ->
     link_prog(Objs, []).
@@ -341,7 +339,7 @@ link_prog(Objs, Attribs) when is_list(Objs) ->
             ErrorStr = gl:getProgramInfoLog(Prog, BufSize),
             io:format("Error: in program linking~n: ~s~n",[ErrorStr]),
             gl:deleteProgram(Prog),
-            throw("Compilation failed")
+            throw({link, "Linking failed"})
     end.
 
 %%%%%%%%%%%%%  Framebuffer object %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

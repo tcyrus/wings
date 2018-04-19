@@ -857,28 +857,35 @@ prepare_arealight(#light{type=area}=L, {Pos0,Dir0,Exp}, M) ->
 	end,
     #{light=>L, pos=>{X,Y,Z,1.0}, dir=>Dir, exp=>Exp}.
 
-setup_light(#{light:=#light{type=ambient,ambient=Amb}}, RS) ->
-    gl:lightModelfv(?GL_LIGHT_MODEL_AMBIENT, Amb),
-    wings_shaders:use_prog(ambient_light, RS);
-setup_light(#{light:=#light{type=infinite}=L, pos:=Pos}, RS) ->
-    gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
-    setup_color(?GL_LIGHT0, L),
-    wings_shaders:use_prog(infinite_light, RS);
-setup_light(#{light:=#light{type=point}=L,pos:=Pos}, RS) ->
-    gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_CUTOFF, 180.0),
-    setup_color(?GL_LIGHT0, L),
-    setup_attenuation(?GL_LIGHT0, L),
-    wings_shaders:use_prog(point_light, RS);
-setup_light(#{light:=#light{type=spot,spot_angle=Angle,spot_exp=Exp}=L,
-              pos:=Pos, dir:=Dir}, RS) ->
-    gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_CUTOFF, Angle),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_EXPONENT, Exp),
-    gl:lightfv(?GL_LIGHT0, ?GL_SPOT_DIRECTION, Dir),
-    setup_color(?GL_LIGHT0, L),
-    setup_attenuation(?GL_LIGHT0, L),
-    wings_shaders:use_prog(spot_light, RS);
+setup_light(#{light:=#light{type=ambient,ambient=Amb}}, RS0) ->
+    RS = wings_shaders:use_prog(ambient_light, RS0),
+    wings_shaders:set_uloc(light_diffuse, Amb, RS);
+
+setup_light(#{light:=#light{type=infinite, diffuse=Diff}, pos:=Pos}, RS0) ->
+    RS1 = wings_shaders:use_prog(infinite_light, RS0),
+    RS2 = wings_shaders:set_uloc(ws_lightpos, Pos, RS1),
+    wings_shaders:set_uloc(light_diffuse, Diff, RS2);
+
+setup_light(#{light:=#light{type=point, diffuse=Diff,
+                            lin_att=Lin,quad_att=Quad},
+              pos:=Pos}, RS0) ->
+    RS1 = wings_shaders:use_prog(point_light, RS0),
+    RS2 = wings_shaders:set_uloc(ws_lightpos, Pos, RS1),
+    RS3 = wings_shaders:set_uloc(light_diffuse, Diff, RS2),
+    wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS3);
+
+setup_light(#{light:=#light{type=spot, diffuse=Diff,
+                            lin_att=Lin,quad_att=Quad,
+                            spot_angle=Angle,spot_exp=Exp},
+              pos:=Pos, dir:=Dir}, RS0) ->
+    RS1 = wings_shaders:use_prog(spot_light, RS0),
+    RS2 = wings_shaders:set_uloc(ws_lightpos, Pos, RS1),
+    RS3 = wings_shaders:set_uloc(light_diffuse, Diff, RS2),
+    RS4 = wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS3),
+    RS5 = wings_shaders:set_uloc(light_dir, Dir, RS4),
+    RS6 = wings_shaders:set_uloc(light_angle, math:cos(Angle*math:pi()/180.0), RS5),
+    wings_shaders:set_uloc(light_exp, Exp, RS6);
+
 setup_light(#{light:=#light{type=area}=L, pos:=Pos, dir:=Dir, exp:=Exp}, RS) ->
     gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
     gl:lightf(?GL_LIGHT0, ?GL_SPOT_CUTOFF, 90.0),
