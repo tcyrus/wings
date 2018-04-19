@@ -7,6 +7,10 @@
 
 #version 120
 
+#ifdef GL_ARB_shader_texture_lod
+#extension GL_ARB_shader_texture_lod : enable
+#endif
+
 uniform int UseDiffuseMap;
 uniform int UseNormalMap;
 uniform int UseMetallic;
@@ -19,18 +23,24 @@ uniform sampler2D RMMap;
 uniform sampler2D EmissionMap;
 uniform sampler2D OcculMap;
 
+uniform sampler2D EnvBrdfMap;
+uniform sampler2D EnvDiffMap;
+uniform sampler2D EnvSpecMap;
+
 uniform float metallic;
 uniform float roughness;
 
-varying vec3 normal;
-varying vec3 ecPosition;
+varying vec3 ws_normal;
+varying vec4 ws_tangent;
+varying vec3 ws_position;
+uniform vec3 ws_eyepoint;
 varying vec4 color;
-varying vec4 tangent;
+varying mat3 ws_TBN;
 
 const vec3 l0_diff = vec3(0.7,0.7,0.7);
 const vec3 l0_spec = vec3(0.2,0.2,0.2);
 const vec3 l0_amb  = vec3(0.0,0.0,0.0);
-const vec3 l0_pos  = vec3(0.110,0.25,0.994);
+const vec3 l0_pos  = vec3(0.0,0.5,0.0);
 
 const vec3 lg_amb  = vec3(0.1,0.1,0.1);
 
@@ -56,35 +66,33 @@ struct PBRInfo
 
 vec4 SRGBtoLINEAR(vec4 srgbIn)
 {
-    #ifdef MANUAL_SRGB
-    #ifdef SRGB_FAST_APPROXIMATION
-    vec3 linOut = pow(srgbIn.xyz,vec3(2.2));
-    #else //SRGB_FAST_APPROXIMATION
+    // #ifdef MANUAL_SRGB
+    // #ifdef SRGB_FAST_APPROXIMATION
+    // vec3 linOut = pow(srgbIn.xyz,vec3(2.2));
+    // #else //SRGB_FAST_APPROXIMATION
     vec3 bLess = step(vec3(0.04045),srgbIn.xyz);
     vec3 linOut = mix( srgbIn.xyz/vec3(12.92), pow((srgbIn.xyz+vec3(0.055))/vec3(1.055),vec3(2.4)), bLess );
-    #endif //SRGB_FAST_APPROXIMATION
+    // #endif //SRGB_FAST_APPROXIMATION
     return vec4(linOut,srgbIn.w);;
-    #else //MANUAL_SRGB
-    return srgbIn;
-    #endif //MANUAL_SRGB
+    // #else //MANUAL_SRGB
+    // return srgbIn;
+    // #endif //MANUAL_SRGB
 }
 
 vec3 get_normal() {
-    vec3 T = tangent.xyz;
+    vec3 T = normalize(ws_tangent.xyz);
     float backface = (2.0 * float(gl_FrontFacing) - 1.0);
     if(UseNormalMap == 0 || dot(T,T) < 0.1)
-	return backface*normalize(normal); // No normal-map or Tangents
-    //return normalize(tangent.xyz);
+	return backface*normalize(ws_normal); // No normal-map or Tangents
     // Calc Bumped normal
-    vec3 N = normalize(normal);
-    T = normalize(T);
-    T = normalize(T - dot(T, N) * N);
-    vec3 B = cross(T, N) * tangent.w;
     vec3 BumpMapNormal = texture2D(NormalMap, gl_TexCoord[0].xy).xyz;
     BumpMapNormal = 2.0 * BumpMapNormal - vec3(1.0, 1.0, 1.0);
-    vec3 NewNormal;
+    vec3 N = normalize(ws_normal);
+    T = normalize(T - dot(T, N) * N);
+    vec3 B = cross(T, N) * ws_tangent.w;
     mat3 TBN = mat3(T, B, N);
-    NewNormal = TBN * BumpMapNormal;
+    vec3 NewNormal = TBN * BumpMapNormal;
+    // vec3 NewNormal = ws_TBN * BumpMapNormal;
     NewNormal = normalize(NewNormal);
     return backface*NewNormal;
 }
@@ -149,9 +157,44 @@ float microfacetDistribution(PBRInfo pbrInputs)
 // See also [1], Equation 1
 vec3 diffuse(PBRInfo pbrInputs)
 {
-  return pbrInputs.diffuseColor;
+  return pbrInputs.diffuseColor / M_PI;
 }
 
+vec2 vec2uv(vec3 vec)
+{
+  float u = atan(vec.x, -vec.z);
+  float v = -asin(vec.y);
+  if(u < 0.0f) return vec2(0.5*u/M_PI, 0.5+v/M_PI);
+  else return vec2(1.0f+0.5*u/M_PI, 0.5+v/M_PI);
+}
+
+vec3 background_ligthting(PBRInfo pbrInputs, vec3 N, vec3 reflection)
+{
+    vec3 refl = normalize(reflection);
+    vec2 index = vec2uv(refl);
+
+    //    if((bool)0)
+    {
+      // vec2 brdf = vec2(pbrInputs.NdotV, 1.0-pbrInputs.perceptualRoughness);
+      // float difflight = (0.8*N.y+1.0)/2.0 * 0.15;
+      // vec3 diffuse  = difflight * pbrInputs.diffuseColor;
+      // float specligth = (0.8*reflection.y+1.0)/2.0 * 0.1;
+      // vec3 specular = specligth * (pbrInputs.specularColor * brdf.x + brdf.y);
+    // } else {
+      vec2 brdf = texture2D(EnvBrdfMap, vec2(pbrInputs.NdotV, pbrInputs.perceptualRoughness)).rg;
+      vec3 difflight = SRGBtoLINEAR(texture2D(EnvDiffMap, index)).rgb;
+      vec3 diffuse  = difflight * pbrInputs.diffuseColor;
+#ifdef GL_ARB_shader_texture_lod
+      float mipCount = 8.0; // resolution of 512x256
+      float lod = (pbrInputs.perceptualRoughness * mipCount);
+      vec3 specligth = SRGBtoLINEAR(texture2DLod(EnvSpecMap, index, lod)).rgb;
+#else
+      vec3 specligth = SRGBtoLINEAR(texture2D(EnvSpecMap, index)).rgb;
+#endif
+      vec3 specular = specligth * (pbrInputs.specularColor * brdf.x + brdf.y);
+      return diffuse + specular;
+    }
+}
 
 void main(void)
 {
@@ -165,10 +208,9 @@ void main(void)
     vec3 specular = mix(f0, baseColor.rgb, metallic);
 
     vec3 n = get_normal();
-    vec3 lightVec0 = normalize(l0_pos);
-    vec3 v = normalize(-ecPosition);  // point to camera
-    vec3 l = lightVec0;               // point to ligth
-    vec3 h = normalize(l+v);          // halfv between l and v
+    vec3 v = normalize(ws_eyepoint-ws_position);  // point to camera
+    vec3 l = normalize(ws_eyepoint+l0_pos);  // point to ligth
+    vec3 h = normalize(l+v);           // halfv between l and v
 
     float NdotL = clamp(dot(n, l), 0.001, 1.0);
     float NdotV = abs(dot(n, v)) + 0.001;
@@ -210,6 +252,7 @@ void main(void)
     vec3 specContrib = F * G * D / (4.0 * NdotL * NdotV);
     // Obtain final intensity as reflectance (BRDF) scaled by the energy of the light (cosine law)
     vec3 frag_color = NdotL * l0_diff * (diffuseContrib + specContrib);
+    frag_color += 0.6*background_ligthting(pbrInputs, n, normalize(reflect(v, n)));
 
     if(UseOcclusion > 0) {
       float ao = texture2D(OcculMap, gl_TexCoord[0].xy).r;
@@ -226,8 +269,10 @@ void main(void)
     // frag_color = F;
     // frag_color = 1.0 - F;
     // frag_color = 1.0 - vec3(max(max(F.r, F.g), F.b)),
-    gl_FragColor = vec4(pow(frag_color, vec3(1.0/1.5)), //vec3(1.0/2.2)),
-                        baseColor.a);
+    gl_FragColor = vec4(pow(frag_color, vec3(1.0/2.2)), baseColor.a); // Should be 2.2
+    // frag_color = vec3(normalize(reflect(v, n)*+1.0)*0.5);
+    // frag_color = n;
+    // gl_FragColor = vec4((n+1.0)*0.5, baseColor.a);
 }
 
 

@@ -12,7 +12,7 @@
 %%
 
 -module(wings_shaders).
--export([init/0, compile_all/0, use_prog/2, set_uloc/3, read_texture/1]).
+-export([init/0, compile_all/0, use_prog/2, set_uloc/3]).
 
 -define(NEED_OPENGL, 1).
 -include("wings.hrl").
@@ -31,7 +31,7 @@ compile_all() ->
 	  {"SkyColor", wings_pref:get_value(hl_skycol)},
 	  {"GroundColor", wings_pref:get_value(hl_groundcol)}],
     try
-        Programs = [{1, make_prog(camera_light, "Two Camera Lights")},
+        Programs = [{1, make_prog(camera_light, "One Camera Lights")},
                     {2, make_prog(hemilight, HL, "Hemispherical Lighting")},
                     {ambient_light, make_prog(ambient_light, "")},
                     {infinite_light, make_prog(infinite_light, "")},
@@ -61,12 +61,6 @@ use_prog(Name, RS) ->
             wings_gl:use_prog(Prog),
             RS#{shader=>Shader}
     end.
-
-read_texture(FileName) ->
-    Path = filename:join(wings_util:lib_dir(wings), "textures"),
-    NewFileName = filename:join(Path, FileName),
-    ImgRec = e3d_image:load(NewFileName, [{order,lower_left}]),
-    ImgRec.
 
 set_uloc(Id, To, Rs0) ->
     case maps:get(Id, Rs0, undefined) of
@@ -107,10 +101,14 @@ make_prog(Name, Vars, Desc) ->
     Res = maps:from_list([{name,Name},{prog,Prog},{desc,Desc}|Uniforms]),
     wings_gl:set_uloc(Res, "DiffuseMap",  ?DIFFUSE_MAP_UNIT),
     wings_gl:set_uloc(Res, "NormalMap",   ?NORMAL_MAP_UNIT),
-    wings_gl:set_uloc(Res, "EnvMap",      ?ENV_MAP_UNIT),
     wings_gl:set_uloc(Res, "RMMap",       ?ROUGH_METAL_MAP_UNIT),
     wings_gl:set_uloc(Res, "EmissionMap", ?EMISSION_MAP_UNIT),
     wings_gl:set_uloc(Res, "OcculMap",    ?OCCUL_MAP_UNIT),
+    %% Lights
+    wings_gl:set_uloc(Res, "EnvBrdfMap",  ?ENV_BRDF_MAP_UNIT),
+    wings_gl:set_uloc(Res, "EnvSpecMap",  ?ENV_SPEC_MAP_UNIT),
+    wings_gl:set_uloc(Res, "EnvDiffMap",  ?ENV_DIFF_MAP_UNIT),
+
     [wings_gl:set_uloc(Res, Var, Val) || {Var,Val} <- Vars],
     Res.
 

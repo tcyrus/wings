@@ -24,7 +24,6 @@
 -import(lists, [foldl/3]).
 
 init() ->
-    wings_shaders:init(),
     wings_pref:set_default(multisample, true),
     init_polygon_stipple().
 
@@ -290,10 +289,11 @@ render_lighted(Faces, Lights, RS0) ->
          end,
     foldl(Do, RS0, Lights).
 
-enable_lighting(false, #{}=RS) ->
+enable_lighting(false, #{}=RS0) ->
     Lighting = wings_pref:get_value(number_of_lights),
     gl:color4ub(255, 255, 255, 255), %% Needed when vertex colors are not set
-    wings_shaders:use_prog(Lighting, RS);
+    RS = wings_shaders:use_prog(Lighting, RS0),
+    wings_shaders:set_uloc(ws_eyepoint, wings_view:eye_point(), RS);
 enable_lighting(ambient, RS) ->
     RS;
 enable_lighting(_, RS) ->

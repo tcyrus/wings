@@ -89,6 +89,7 @@ init_part2(Frame, GeomGL) ->
 
     wings_camera:init(),
     wings_vec:init(),
+    wings_shaders:init(),
 
     wings_view:init(),
     wings_u:caption(St),

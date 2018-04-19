@@ -17,9 +17,10 @@
 	 screenshot/2,screenshot/1,viewport_screenshot/1,
 	 bumpid/1,
 	 is_normalmap/1,
+         load_envmap/1, load_envmap/2,
 	 next_id/0,delete_older/1,delete_from/1,delete/1,
 	 update/2,update_filename/2,find_image/2,
-	 window/1]).
+	 window/1, debug_display/2]).
 -export([image_formats/0,image_read/1,image_write/1,
 	 e3d_to_wxImage/1, wxImage_to_e3d/1]).
 -export([maybe_exceds_opengl_caps/1]).
@@ -131,6 +132,14 @@ update_filename(Id, Filename) ->
 
 find_image(Dir, Filename) ->
     req({find_image,Dir,Filename}, false).
+
+load_envmap(File) ->
+    load_envmap(File, false).
+load_envmap(File, Recompile) ->
+    Path = filename:join(wings_util:lib_dir(wings), "textures"),
+    FileName = filename:join(Path, File),
+    EnvImgRec = image_read([{filename, FileName}]),
+    req({load_envmap, EnvImgRec, Recompile}, false).
 
 req(Req) ->
     req(Req, true).
@@ -285,12 +294,11 @@ handle_call({find_image, Dir, File}, _From, #ist{images=Ims}=S) ->
         [] -> {reply, false, S};
         [Id|_] -> {reply, {true, Id}, S}
     end;
-
-%% handle_call({load_envmap, Img}, _From, #ist{} = S) ->
-%%     case cl_setup() of
-%%         {error, _R} = Err -> {reply, Err, S};
-%%         CL  -> {reply, make_envmap(CL, Img), S}
-%%     end;
+handle_call({load_envmap, Img, Recompile}, _From, #ist{} = S) ->
+    case cl_setup(Recompile) of
+        {error, _R} = Err -> {reply, Err, S};
+        CL -> {reply, make_envmap(CL, Img), S}
+    end;
 handle_call(Req, _From, S) ->
     io:format("~w: Bad request: ~w~n", [?MODULE, Req]),
     {reply, error, S}.
@@ -695,6 +703,141 @@ pattern_repeat(N, D) ->
 truncate(B0, Sz) ->
     <<B:Sz/binary,_/binary>> = list_to_binary(B0),
     B.
+
+make_envmap(CL, EnvImgRec0) ->
+    EnvImgRec = e3d_image:convert(maybe_convert(EnvImgRec0),r8g8b8a8),
+    W = 512, H = 256,  %% Sizes for result images
+    [BrdfId, DiffId, SpecId] = gl:genTextures(3),
+    OrigImg = wings_cl:image(EnvImgRec, CL),
+    Buff0   = wings_cl:buff(W*512*4*4, [read_write], CL),
+    Buff1   = wings_cl:buff(W*512*4*4, [read_write], CL),
+    make_diffuse(OrigImg, Buff0, Buff1, W, H, DiffId, CL),
+    make_spec(OrigImg, Buff0, Buff1, W, H, SpecId, CL),
+    make_brdf(Buff0, 512, 512, BrdfId, CL),
+    cl:release_mem_object(OrigImg),
+    cl:release_mem_object(Buff0),
+    cl:release_mem_object(Buff1),
+    ok.
+
+make_brdf(Buff, W, H, TxId, CL) ->
+    Fill = wings_cl:fill(Buff, <<0:(32*2)>>, W*H*4*2, CL),
+    CC   = wings_cl:cast(schlick_brdf, [Buff, W, H], [W,H], [Fill], CL),
+    Read = wings_cl:read(Buff, W*H*4*2, [CC], CL),
+    {ok, BrdfData} = cl:wait(Read),
+    Img = << << (round(X*255)), (round(Y*255)), 0 >>
+             || <<X:32/float-native, Y:32/float-native>> <= BrdfData >>,
+    %% debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="BRDF"}),
+
+    gl:activeTexture(?GL_TEXTURE0 + ?ENV_BRDF_MAP_UNIT),
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_CLAMP_TO_EDGE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
+    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img),
+    gl:activeTexture(?GL_TEXTURE0).
+
+make_diffuse(OrigImg, Buff0, Buff1, W, H, TxId, CL) ->
+    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
+    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
+    {B0,B1,Pre} = cl_multipass(make_diffuse, [OrigImg, W, H], Buff0, Buff1, 0, 10,
+                               [W,H], [Fill0, Fill1], CL),
+    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
+    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
+    {ok, DiffData} = cl:wait(Read),
+    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
+              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= DiffData >>,
+    %% debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="Diffuse"}),
+
+    gl:activeTexture(?GL_TEXTURE0 + ?ENV_DIFF_MAP_UNIT),
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
+    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img),
+    gl:activeTexture(?GL_TEXTURE0).
+
+make_spec(OrigImg, Buff0, Buff1, W0, H0, TxId, CL) ->
+    NoMipMaps = trunc(math:log2(min(W0,H0))),
+    MipMaps = make_spec(0, NoMipMaps, OrigImg, Buff0, Buff1, W0, H0, CL),
+    gl:activeTexture(?GL_TEXTURE0 + ?ENV_SPEC_MAP_UNIT),
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_REPEAT),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAX_LEVEL, NoMipMaps-1),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR_MIPMAP_LINEAR),
+    [gl:texImage2D(?GL_TEXTURE_2D, Level, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img) ||
+        {Img,W,H,Level} <- MipMaps],
+    gl:activeTexture(?GL_TEXTURE0).
+
+make_spec(Level, Max, OrigImg, Buff0, Buff1, W, H, CL) when Level =< Max ->
+    Step = Level/Max,
+    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
+    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
+    {B0,B1,Pre}  = cl_multipass(make_specular, [OrigImg, W, H, Step],
+                                Buff0, Buff1, 0, 10, [W,H], [Fill0, Fill1], CL),
+    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
+    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
+    {ok, SpecData} = cl:wait(Read),
+    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
+              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= SpecData >>,
+    %% io:format("~p: ~p ~p  ~.3f~n", [Level, W, H, Step]),
+    %% Level < 3 andalso
+    %%     debug_display(1000-Level, #e3d_image{width=W, height=H, image=Img,
+    %%                                          name="Spec: " ++ integer_to_list(Level)}),
+    [{Img,W,H,Level} | make_spec(Level+1, Max, OrigImg, Buff0, Buff1, W div 2, H div 2, CL)];
+make_spec(_Level, _Max, _OrigImg, _B0, _B1, _W, _H, _CL) ->
+    [].
+
+cl_multipass(Kernel, Args, Buff0, Buff1, N, Tot, No, Wait, CL) when N < Tot ->
+    Next = wings_cl:cast(Kernel, Args ++ [Buff0, Buff1, N, Tot], No, Wait, CL),
+    cl_multipass(Kernel, Args, Buff1, Buff0, N+1, Tot, No, [Next], CL);
+cl_multipass(_Kernel, _Args, Buff0, Buff1, _N, _Tot, _No, Wait, _CL) ->
+    {Buff0, Buff1, Wait}.
+
+debug_display(Id, Img) ->
+    Display = fun(_) -> wings_image_viewer:new({image, Id}, Img), keep end,
+    wings ! {external, Display}.
+
+cl_setup(Recompile) ->
+    case get({?MODULE, cl}) of
+	undefined ->
+            case wings_cl:is_available() of
+                true ->
+                    try cl_setup_1()
+                    catch _:Reason ->
+                            io:format("CL setup error: ~p ~p~n",
+                                      [Reason, erlang:get_stacktrace()]),
+                            {error, no_openCL}
+                    end;
+                false -> {error, no_openCL}
+            end;
+	CL0 when Recompile ->
+            try
+                wings_cl:compile("img_lib.cl", CL0)
+            catch _:Reason ->
+                    io:format("CL compile error: ~p ~p~n",
+                              [Reason, erlang:get_stacktrace()]),
+                    CL0
+            end;
+        CL ->
+            CL
+    end.
+
+cl_setup_1() ->
+    CL0 = wings_cl:setup(),
+    case wings_cl:have_image_support(CL0) of
+        true  ->
+            CL = wings_cl:compile("img_lib.cl", CL0),
+            put({?MODULE, cl}, CL),
+            CL;
+        false ->
+            {error, no_openCL_image}
+    end.
+
+
 
 %% Run a computation in a worker process with a generous heap size
 %% and the default generational garbage collector. Before R12B,
