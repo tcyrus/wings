@@ -1,12 +1,5 @@
-// $Id$
 //
-// Vertex shader for hemispherical lighting
-//
-// Author: Randi Rost
-//
-// Copyright (C) 2005 3Dlabs, Inc.
-//
-// See 3Dlabs-License.txt for license information
+// Vertex shader for most of the frament shader
 //
 
 attribute vec4 wings_tangent;

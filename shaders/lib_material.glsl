@@ -53,18 +53,17 @@ PBRInfo calc_material(PBRInfo pbr) {
   vec4 baseColor = get_basecolor();
   vec3 f0 = vec3(0.04);
   vec4 mr = get_metalroughness();
-  float metallic = mr.b;
-  float roughness = mr.g;
-  vec3 specular = mix(f0, baseColor.rgb, metallic);
-  float alphaRoughness = roughness*roughness;
+  float met = mr.b;
+  float rgh = mr.g;
+  vec3 specular = mix(f0, baseColor.rgb, met);
 
   float reflectance = max(max(specular.r, specular.g), specular.b);
   float reflectance90 = clamp(reflectance * 25.0, 0.0, 1.0);
   vec3 specularEnvironmentR0 = specular.rgb;
   vec3 specularEnvironmentR90 = vec3(1.0, 1.0, 1.0) * reflectance90;
 
-  pbr.perceptualRoughness = roughness;
-  pbr.alphaRoughness = roughness*roughness;
+  pbr.perceptualRoughness = rgh;
+  pbr.alphaRoughness = rgh*rgh;
 
   pbr.reflectance0 = specularEnvironmentR0;
   pbr.reflectance90 = specularEnvironmentR90;

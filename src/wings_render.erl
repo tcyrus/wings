@@ -128,8 +128,9 @@ setup_scene_lights(true, Lights, RS0) ->
 render_objects(Mode, PM, MM, UseSceneLights) ->
     Dls = wings_dl:display_lists(),
     {Open,Closed,Lights} = split_objects(Dls, [], [], []),
+    NonLights = Open ++ Closed,
     RS0 = #{eyepoint => e3d_mat:mul_point(e3d_transform:inv_matrix(MM), {0.0,0.0,0.0})},
-    RS1 = render_lights(Lights, RS0),
+    RS1 = render_lights(Lights, Mode, PM, RS0),
     {SL, RS2} = setup_scene_lights(UseSceneLights, Lights, RS1),
     case wings_wm:get_prop(workmode) of
 	false ->
@@ -138,24 +139,38 @@ render_objects(Mode, PM, MM, UseSceneLights) ->
                        false -> RS2
                    end,
             RS21 = render_smooth_objects(Open, Closed, SL, RS10),
-            RS22 = render_wire(Dls, Mode, true, RS21),
-            render_sel_highlight(Dls, Mode, true, PM, RS22);
+            RS22 = render_wire(NonLights, Mode, true, RS21),
+            render_sel_highlight(NonLights, Mode, true, PM, RS22);
 	true ->
             RS10 = case UseSceneLights of
                        true -> render_work_objects(Open, Closed, ambient, RS2); %% amb pass
                        false -> RS2
                   end,
             RS21 = render_work_objects(Open, Closed, SL, RS10),
-            RS22 = render_wire(Dls, Mode, false, RS21),
-            render_sel_highlight(Dls, Mode, false, PM, RS22)
+            RS22 = render_wire(NonLights, Mode, false, RS21),
+            render_sel_highlight(NonLights, Mode, false, PM, RS22)
     end.
 
-render_lights(Lights, RS0) ->
-    RS1 = wings_shaders:use_prog(2, RS0),
+render_lights(Lights, Mode, PM, RS0) ->
+    RS1 = wings_shaders:use_prog(light_light, RS0),
     gl:color4ub(255, 255, 255, 255),
-    RS = render_work_objects_0(Lights, false, RS1),
+    gl:disable(?GL_CULL_FACE),
+    gl:enable(?GL_POLYGON_OFFSET_FILL),
+    polygonOffset(2.0),
+    RS2 = render_work_objects_0(Lights, false, RS1),
     gl:color4ub(255, 255, 255, 255),
-    RS.
+    RS21 = wings_shaders:use_prog(0, RS2),
+    polygonOffset(0.0),
+    gl:disable(?GL_POLYGON_OFFSET_FILL),
+    AreaLights = [D || #dlo{src_we=We}=D <- Lights, ?IS_AREA_LIGHT(We)],
+    case AreaLights of
+        [] -> RS21;
+        AreaLights ->
+            RS22 = render_wire(AreaLights, Mode, true, RS21),
+            RS23 = render_sel_highlight(AreaLights, Mode, false, PM, RS22),
+            gl:color4ub(255, 255, 255, 255), %% Reset vertex col from sel_col or edge_col
+            RS23
+    end.
 
 render_work_objects(Open, Closed, SceneLights, RS0) ->
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_FILL),
@@ -234,8 +249,8 @@ render_object_2(D, false, RenderTrans, SceneLights, RS) ->
 
 render_plain(#dlo{work=Faces,src_we=We,proxy=false}, SceneLights, RS) ->
     case wire(We) of
-        false -> render_lighted(Faces, SceneLights, RS);
         _ when ?IS_LIGHT(We) -> render_lighted(Faces, SceneLights, RS);
+        false -> render_lighted(Faces, SceneLights, RS);
         true -> RS
     end;
 render_plain(#dlo{proxy_data=PD, drag=Drag}, SceneLights, RS0) ->
@@ -356,7 +371,6 @@ render_wire(Dls, _, true, RS0) ->
     gl:enable(?GL_CULL_FACE),
     gl:disable(?GL_POLYGON_OFFSET_FILL),
     gl:depthMask(?GL_TRUE),
-    RS1 = disable_lighting(RS0),
     gl:shadeModel(?GL_FLAT),
     gl:depthFunc(?GL_LEQUAL),
     WOs = wings_wm:get_prop(wireframed_objects),
@@ -364,9 +378,9 @@ render_wire(Dls, _, true, RS0) ->
     gl:color3fv(wings_pref:get_value(edge_color)),
     gl:lineWidth(1.0),
     gl:polygonMode(?GL_FRONT_AND_BACK, ?GL_LINE),
-    RS2 = foldl(fun(D,RS) -> render_wire_object(D, cage, RS) end, RS1, Ws),
+    RS1 = foldl(fun(D,RS) -> render_wire_object(D, cage, RS) end, RS0, Ws),
     Style = wings_pref:get_value(proxy_shaded_edge_style),
-    foldl(fun(D,RS) -> render_wire_object(D, Style, RS) end, RS2, PWs).
+    foldl(fun(D,RS) -> render_wire_object(D, Style, RS) end, RS1, PWs).
 
 render_wire_object(#dlo{drag={matrix,_,_,Matrix}}=D, PStyle, RS0) ->
     gl:pushMatrix(),

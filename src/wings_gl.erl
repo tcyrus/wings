@@ -284,7 +284,7 @@ uloc(Prog, What) ->
 
 set_uloc(#{}=Map, Var, Val) ->
     case maps:get(Var,Map, undefined) of
-        undefined ->
+        undefined -> %% io:format("~p: NO ~p~n~p~n",[?LINE,Var, Map]),
             ok;
         Pos ->
             set_uloc(Pos, Val)
@@ -304,7 +304,11 @@ set_uloc(Pos, {A,B}) when is_float(A),is_float(B) ->
 set_uloc(Pos, {A,B,C}) when is_float(A),is_float(B),is_float(C) ->
     gl:uniform3f(Pos,A,B,C);
 set_uloc(Pos, {A,B,C,D}) when is_float(A),is_float(B),is_float(C) ->
-    gl:uniform4f(Pos,A,B,C,D).
+    gl:uniform4f(Pos,A,B,C,D);
+set_uloc(Pos, [{A,B,C}|_]=L) when is_float(A),is_float(B),is_float(C) ->
+    gl:uniform3fv(Pos,L);
+set_uloc(Pos, [{A,B,C,_}|_]=L) when is_float(A),is_float(B),is_float(C) ->
+    gl:uniform4fv(Pos,L).
 
 compile(Type, Src) when is_binary(Src) ->
     Handle = gl:createShader(glType(Type)),

@@ -455,7 +455,7 @@ apply_material_2(Props, _, RS0) ->
     fun() -> RS end.
 
 apply_material_3({{tex, Type}=TexType, TexId}, Rs0) ->
-    case wings_shaders:change_uloc(TexType, TexId, Rs0) of
+    case wings_shaders:set_state(TexType, TexId, Rs0) of
         {false, Rs0} ->
             Rs0;
         {true, Rs1} when TexId =:= none ->
@@ -580,7 +580,7 @@ is_transparent(Name, Mtab) ->
     is_mat_transparent(Mat).
 
 is_mat_transparent(Mat) ->
-    OpenGL = prop_get(opengl, Mat),
+    OpenGL = proplists:get_value(opengl, Mat, []),
     Trans = lists:any(fun({diffuse,{_,_,_,Alpha}}) when Alpha < 1.0 -> true;
                          (_) -> false
                       end, OpenGL),

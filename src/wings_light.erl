@@ -12,7 +12,8 @@
 %%
 
 -module(wings_light).
--export([light_types/0,menu/3,command/2,is_any_light_selected/1,
+-export([init/0,
+         light_types/0,menu/3,command/2,is_any_light_selected/1,
 	 any_enabled_lights/0,info/1,setup_light/2,
 	 create/2,update_dynamic/2,update_matrix/2,update/1,
 	 global_lights/1,
@@ -23,6 +24,7 @@
 -define(NEED_OPENGL, 1).
 -include("wings.hrl").
 -include("e3d.hrl").
+-include("e3d_image.hrl").
 
 -import(lists, [reverse/1,foldl/3,foldr/3,member/2,keydelete/3,sort/1]).
 
@@ -47,6 +49,28 @@
 	 spot_exp,				%Spot exponent.
 	 prop=[]				%Extra properties.
 	}).
+
+init() ->
+    Path = filename:join(wings_util:lib_dir(wings), "textures"),
+    LTCmatFile = "areal_ltcmat.bin",
+    {ok, LTCmat} = file:read_file(filename:join(Path, LTCmatFile)),
+
+    64*64*4*4 = byte_size(LTCmat),
+    TxId = wings_image:new_hidden(area_mat,
+                                  #e3d_image{type=r32g32b32a32, bytes_pp=16,
+                                             width=64,height=64,
+                                             image=LTCmat
+                                            }),
+    gl:activeTexture(?GL_TEXTURE0 + ?AREA_LTC_MAT_UNIT),
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_CLAMP_TO_EDGE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
+    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGBA32F, 64, 64, 0, ?GL_RGBA, ?GL_FLOAT, LTCmat),
+    gl:activeTexture(?GL_TEXTURE0),
+    ?CHECK_ERROR(),
+    ok.
 
 light_types() ->
     [{?__(1,"Infinite"),infinite,
@@ -206,7 +230,6 @@ color([H,V,S], #dlo{src_we=#we{light=L0}=We0}=D, A) ->
     L = update_color(L0, Col),
     We = We0#we{light=L},
     update(D#dlo{work=none,src_we=We}).
-
 
 get_light_color(#light{type=ambient,ambient=Col}) -> Col;
 get_light_color(#light{diffuse=Diff}) -> Diff.
@@ -462,8 +485,9 @@ update(D) -> D.
 
 update_1(#we{light=#light{type=Type}}=We, #dlo{src_sel=SrcSel}) ->
     SelColor = case SrcSel of
-		   none -> {0.0,0.0,1.0};
-		   _ -> wings_pref:get_value(selected_color)
+		   none -> {0.0,0.0,1.0,1.0};
+		   _ -> {R,G,B} = wings_pref:get_value(selected_color),
+                        {R,G,B,1.0}
 	       end,
     update_fun(Type, SelColor, We).
 
@@ -478,9 +502,9 @@ update_fun(infinite, SelColor, #we{light=#light{aim=Aim}}=We) ->
 		gl:pushMatrix(),
 		{X,Y,Z} = LightPos,
 		gl:translatef(X, Y, Z),
-		gl:color4fv(LightCol),
+		wings_shaders:set_uloc(light_color, LightCol, RS),
                 gl:drawArrays(?GL_TRIANGLES, 2, Len*3),
-		gl:color3fv(SelColor),
+                wings_shaders:set_uloc(light_color, SelColor, RS),
                 gl:drawArrays(?GL_LINES, 0, 2),
 		gl:popMatrix(),
                 RS
@@ -500,12 +524,12 @@ update_fun(point, SelColor, We) ->
     {Len, Tris,_} = wings_shapes:tri_sphere(#{subd=>3, scale=>0.08}),
     D = fun(RS) ->
 		gl:lineWidth(1.0),
-		gl:color4fv(LightCol),
+		wings_shaders:set_uloc(light_color, LightCol, RS),
 		gl:pushMatrix(),
 		{X,Y,Z} = LightPos,
 		gl:translatef(X, Y, Z),
                 gl:drawArrays(?GL_TRIANGLES, N, Len*3),
-		gl:color3fv(SelColor),
+		wings_shaders:set_uloc(light_color, SelColor, RS),
 		gl:drawArrays(?GL_LINES, 0, N),
 		gl:popMatrix(),
                 RS
@@ -527,12 +551,12 @@ update_fun(spot, SelColor, #we{light=#light{aim=Aim,spot_angle=Angle}}=We) ->
     {Len, Tris,_} = wings_shapes:tri_sphere(#{subd=>3, scale=>0.08}),
     D = fun(RS) ->
                 gl:lineWidth(1.0),
-                gl:color4fv(LightCol),
+		wings_shaders:set_uloc(light_color, LightCol, RS),
                 gl:pushMatrix(),
                 {Tx,Ty,Tz} = Top,
                 gl:translatef(Tx, Ty, Tz),
                 gl:drawArrays(?GL_TRIANGLES, 0, Len*3),
-                gl:color3fv(SelColor),
+		wings_shaders:set_uloc(light_color, SelColor, RS),
                 {Dx,Dy,Dz} = Translate,
                 gl:translatef(Dx, Dy, Dz),
                 gl:multMatrixd(Rot),
@@ -765,7 +789,6 @@ import_fix_face(FaceRec) when is_tuple(FaceRec) ->
 %%%
 
 global_lights(Lights0) ->
-    gl:lightModelfv(?GL_LIGHT_MODEL_AMBIENT, {0.0,0.0,0.0,1.0}),
     Lights = lists:map(fun scene_lights_fun/1, Lights0),
     IsAL = fun(#{light:=#light{type=Type}}) -> Type =:= ambient end,
     lists:partition(IsAL, Lights).
@@ -823,8 +846,7 @@ scene_lights_fun(#dlo{drag=Drag,src_we=We0}=D) ->
  	end,
     prepare_light(We#we.light, We, M).
 
-prepare_light(#light{type=ambient,ambient=Amb}=L, _We, _M) ->
-    gl:lightModelfv(?GL_LIGHT_MODEL_AMBIENT, Amb),
+prepare_light(#light{type=ambient}=L, _We, _M) ->
     #{light=>L};
 prepare_light(#light{type=infinite,aim=Aim}=L, We, _M) ->
     {X,Y,Z} = e3d_vec:norm_sub(light_pos(We), Aim),
@@ -837,44 +859,38 @@ prepare_light(#light{type=spot,aim=Aim}=L, We, _M) ->
     Dir = e3d_vec:norm_sub(Aim, Pos),
     #{light=>L, pos=>{X,Y,Z,1.0}, dir=>Dir};
 prepare_light(#light{type=area}=L, We, M) ->
-    Apde = arealight_posdirexp(We),
-    prepare_arealight(L, Apde, M).
-
-prepare_arealight(#light{type=area}=L, {Pos0,{0.0,0.0,0.0},_}, M) ->
-    {X,Y,Z} = case M of
-                  none -> Pos0;
-                  _ -> mul_point(M, Pos0)
-              end,
-    #{light=>L, pos=>{X,Y,Z,1.0}};
-prepare_arealight(#light{type=area}=L, {Pos0,Dir0,Exp}, M) ->
-    {{X,Y,Z},Dir} =
-	case M of
-	    none -> {Pos0,Dir0};
-	    _ ->
-		Pos = mul_point(M, Pos0),
-		Aim = mul_point(M, e3d_vec:add(Dir0, Pos0)),
-		{Pos,e3d_vec:sub(Aim, Pos)}
-	end,
-    #{light=>L, pos=>{X,Y,Z,1.0}, dir=>Dir, exp=>Exp}.
+    case arealight_props(We) of
+        {area, Corners} -> #{light=>L, points=>[mul_point(M,P)||P<-Corners]};
+        {point, C} ->
+            {X,Y,Z} = mul_point(M, C),
+            #{light=>L#light{type=point}, pos=>{X,Y,Z,1.0}};
+        {spot, Dir0, C} ->
+            {X,Y,Z} = mul_point(M, C),
+            Dir = mul_point(M, Dir0),
+            #{light=>L#light{type=spot}, pos=>{X,Y,Z,1.0}, dir=>Dir}
+    end.
 
 setup_light(#{light:=#light{type=ambient,ambient=Amb}}, RS0) ->
     RS = wings_shaders:use_prog(ambient_light, RS0),
     wings_shaders:set_uloc(light_diffuse, Amb, RS);
 
-setup_light(#{light:=#light{type=infinite, diffuse=Diff}, pos:=Pos}, RS0) ->
+setup_light(#{light:=#light{type=infinite, diffuse=Diff, specular=Spec},
+              pos:=Pos}, RS0) ->
     RS1 = wings_shaders:use_prog(infinite_light, RS0),
     RS2 = wings_shaders:set_uloc(ws_lightpos, Pos, RS1),
-    wings_shaders:set_uloc(light_diffuse, Diff, RS2);
+    RS3 = wings_shaders:set_uloc(light_diffuse, Diff, RS2),
+    wings_shaders:set_uloc(light_specular, Spec, RS3);
 
-setup_light(#{light:=#light{type=point, diffuse=Diff,
+setup_light(#{light:=#light{type=point, diffuse=Diff,specular=Spec,
                             lin_att=Lin,quad_att=Quad},
               pos:=Pos}, RS0) ->
     RS1 = wings_shaders:use_prog(point_light, RS0),
     RS2 = wings_shaders:set_uloc(ws_lightpos, Pos, RS1),
     RS3 = wings_shaders:set_uloc(light_diffuse, Diff, RS2),
-    wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS3);
+    RS4 = wings_shaders:set_uloc(light_specular, Spec, RS3),
+    wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS4);
 
-setup_light(#{light:=#light{type=spot, diffuse=Diff,
+setup_light(#{light:=#light{type=spot, diffuse=Diff,specular=Spec,
                             lin_att=Lin,quad_att=Quad,
                             spot_angle=Angle,spot_exp=Exp},
               pos:=Pos, dir:=Dir}, RS0) ->
@@ -884,83 +900,52 @@ setup_light(#{light:=#light{type=spot, diffuse=Diff,
     RS4 = wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS3),
     RS5 = wings_shaders:set_uloc(light_dir, Dir, RS4),
     RS6 = wings_shaders:set_uloc(light_angle, math:cos(Angle*math:pi()/180.0), RS5),
-    wings_shaders:set_uloc(light_exp, Exp, RS6);
+    RS7 = wings_shaders:set_uloc(light_exp, Exp, RS6),
+    wings_shaders:set_uloc(light_specular, Spec, RS7);
 
-setup_light(#{light:=#light{type=area}=L, pos:=Pos, dir:=Dir, exp:=Exp}, RS) ->
-    gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_CUTOFF, 90.0),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_EXPONENT, Exp),
-    gl:lightfv(?GL_LIGHT0, ?GL_SPOT_DIRECTION, Dir),
-    setup_color(?GL_LIGHT0, L),
-    setup_attenuation(?GL_LIGHT0, L),
-    wings_shaders:use_prog(spot_light, RS);
-setup_light(#{light:=#light{type=area}=L, pos:=Pos}, RS) ->
-    gl:lightfv(?GL_LIGHT0, ?GL_POSITION, Pos),
-    gl:lightf(?GL_LIGHT0, ?GL_SPOT_CUTOFF, 180.0),
-    setup_color(?GL_LIGHT0, L),
-    setup_attenuation(?GL_LIGHT0, L),
-    wings_shaders:use_prog(point_light, RS).
+setup_light(#{light:=#light{type=area, diffuse=Diff, specular=Spec,
+                            lin_att=Lin,quad_att=Quad},
+              points:=Points}, RS0) ->
+    RS1 = wings_shaders:use_prog(area_light, RS0),
+    RS2 = wings_shaders:set_uloc(light_diffuse, Diff, RS1),
+    RS3 = wings_shaders:set_uloc(light_specular, Spec, RS2),
+    RS4 = wings_shaders:set_uloc(light_att, {0.8, Lin, Quad}, RS3),
+    wings_shaders:set_uloc(light_points, Points, RS4).
 
-setup_color(Lnum, #light{diffuse=Diff,ambient=Amb,specular=Spec}) ->
-    gl:lightfv(Lnum, ?GL_DIFFUSE, Diff),
-    gl:lightfv(Lnum, ?GL_AMBIENT, Amb),
-    gl:lightfv(Lnum, ?GL_SPECULAR, Spec).
-
-setup_attenuation(Lnum, #light{lin_att=Lin,quad_att=Quad}) ->
-    gl:lightf(Lnum, ?GL_LINEAR_ATTENUATION, Lin),
-    gl:lightf(Lnum, ?GL_QUADRATIC_ATTENUATION, Quad).
-
-light_pos(#we{light=#light{type=area}}=We) ->
-    {Pos,_,_} = arealight_posdirexp(We),
-    Pos;
 light_pos(We) ->
     wings_vertex:center(We).
 
-arealight_posdirexp(#we{light=#light{type=area}}=We) ->
-    Faces = wings_we:visible(We),
-    ANCs = 
-	[begin 
-	     {wings_face:area(Face, We),
-	      wings_face:normal(Face, We),
-	      wings_face:center(Face, We)}
-	 end || Face <- Faces, wings_face:good_normal(Face, We)],
-    Area = foldl(fun ({A,_,_}, Acc) -> A+Acc end, 0.0, ANCs),
-    AreaNormal = 
-	foldl(fun ({A,N,_}, Acc) -> 
-		      e3d_vec:add(e3d_vec:mul(N, A), Acc) end, 
-	      {0.0,0.0,0.0}, ANCs),
-    Center = e3d_vec:average([C || {_,_,C} <- ANCs]),
-    Normal = e3d_vec:norm(AreaNormal),
-    AreaNormalLen = e3d_vec:len(AreaNormal),
-    if AreaNormalLen >= (0.9 * Area) -> 
-	    %% 90 percent of all light in one direction; spotlight with falloff
-	    {Center,Normal,1.0};
-       true ->
-	    Rear = foldl(fun ({_,N,_}, Acc) ->
-				 A = e3d_vec:dot(Normal, N),
-				 if A < 0.0 -> Acc-A; true -> Acc end
-			 end, 0.0, ANCs),
-	    if Rear > (0.1 * Area) ->
-		    %% At least 10 percent rear light; pointlight
-		    {Center,{0.0,0.0,0.0},0.0};
-	       true ->
-		    %% Front and side light, but no rear; hemispherical spot
-		    {Center,Normal,0.0}
-	    end
+arealight_props(#we{light=#light{type=area}}=We) ->
+    case wings_we:visible(We) of
+        [Face] ->
+            Vs0 = wings_face:vertex_positions(Face, We),
+            case lists:reverse(Vs0) of
+                [_,_,_,_] = Vs -> {area, Vs};
+                [A,B,C]   -> {area, [A,B,C,C]};
+                [A,B,C,D,_] -> {area, [A,B,C,D]}; %% Could do better here
+                _ ->
+                    N = wings_face:normal(Face, We),
+                    C = wings_face:center(Face, We),
+                    {spot, N, C}
+            end;
+        Fs ->
+            C = wings_vertex:center(We),
+            Ns = [wings_face:normal(F, We) || F <- Fs],
+            N = e3d_vec:average(Ns),
+            case e3d_vec:len(N) > 0.5 of
+                true -> {spot, e3d_vec:norm(N), C};
+                false -> {point, C}
+            end
     end.
 
 move_light(Pos, #we{vp=Vtab0}=We) ->
     Vtab = array:sparse_map(fun(_, _) -> Pos end, Vtab0),
     We#we{vp=Vtab}.
 
-shape_materials(#light{diffuse={_,_,_,Af}=Front}, St) ->
-    BlackF = {0.0,0.0,0.0,Af},
-    Default = 
-	sort([{opengl,sort([{diffuse,BlackF},{ambient,BlackF},{specular,BlackF},
-			    {emission,Front},{shininess,0.0}])},
-	      {maps,[]}]),
-    wings_material:update_materials([{default,Default}], St).
+shape_materials(#we{id=Id, light=#light{diffuse=Front}}, #st{mat=Mtab}=St) ->
+    St#st{mat=gb_trees:insert({'_area_light_',Id},[Front],Mtab)}.
 
+mul_point(none, Pos) -> Pos;
 mul_point({1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0, Tx,Ty,Tz}, {X,Y,Z}) ->
     {X+Tx,Y+Ty,Z+Tz};
 mul_point(M, P) -> e3d_mat:mul_point(M, P).

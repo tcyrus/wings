@@ -15,6 +15,7 @@ varying vec3 ws_position;
 uniform vec3 ws_eyepoint;
 uniform vec4 ws_lightpos;
 uniform vec4 light_diffuse;
+uniform vec4 light_specular;
 uniform vec3 light_att;
 
 void main(void)
@@ -33,9 +34,11 @@ void main(void)
 
     // Calculation of analytical lighting contribution
     vec3 diffuseContrib = (1.0 - max(max(F.r, F.g), F.b)) * diffuse(pbr);
+    diffuseContrib *= light_diffuse.xyz;
     vec3 specContrib = F * G * D / (4.0 * pbr.NdotL * pbr.NdotV);
+    specContrib *= light_specular.xyz;
     // Obtain final intensity as reflectance (BRDF) scaled by the energy of the light (cosine law)
-    vec3 frag_color = pbr.NdotL * light_diffuse.xyz * (diffuseContrib + specContrib);
+    vec3 frag_color = pbr.NdotL * (diffuseContrib + specContrib);
 
     gl_FragColor = vec4(pow(frag_color,vec3(1.0/2.2)), pbr.opaque);
 }

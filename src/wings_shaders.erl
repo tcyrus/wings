@@ -36,7 +36,10 @@ compile_all() ->
                  {ambient_light, ambient_light, [], ""},
                  {infinite_light, infinite_light, [], ""},
                  {point_light, point_light, [], ""},
-                 {spot_light, spot_light, [], ""}
+                 {spot_light, spot_light, [], ""},
+                 {area_light, area_light, [], ""},
+                 {light_light, light_light, [], ""},
+                 {no_light, no_light, [], ""}
                 ],
     Make = fun({Id, Name, Uniforms, Desc}, Acc) ->
                    case make_prog(Name, Uniforms, Desc) of
@@ -67,7 +70,10 @@ use_prog(Name, RS) ->
 
 set_uloc(Id, To, Rs0) ->
     case maps:get(shader, Rs0) of
-        0 -> Rs0;
+        0 ->
+            {_k, St} = process_info(self(), current_stacktrace),
+            io:format("~p: ~p~n~p~n",[?LINE,Id,St]),
+            Rs0;
         #{name:=Name} = Shader ->
             case maps:get({Name, Id}, Rs0, undefined) of
                 To ->
@@ -137,7 +143,7 @@ make_prog(Name, Vars, Desc) ->
                     io:format("~s in see: ~p~n~n", [Str, FsFile]),
                     {error, Str};
                 _:Reason ->
-                    io:format("~s in see: ~p~n~n", [Reason, FsFile]),
+                    io:format("~p in see: ~p~n~n", [Reason, FsFile]),
                     gl:useProgram(0),
                     {error, Reason}
             end;
@@ -162,16 +168,19 @@ setup_uniforms(Prog, Vars, Name, Desc) ->
     wings_gl:set_uloc(Res, 'EnvBrdfMap',  ?ENV_BRDF_MAP_UNIT),
     wings_gl:set_uloc(Res, 'EnvSpecMap',  ?ENV_SPEC_MAP_UNIT),
     wings_gl:set_uloc(Res, 'EnvDiffMap',  ?ENV_DIFF_MAP_UNIT),
+    wings_gl:set_uloc(Res, 'AreaLTCMap',  ?AREA_LTC_MAT_UNIT),
 
     [wings_gl:set_uloc(Res, Var, Val) || {Var,Val} <- Vars],
     Res.
 
 fetch_uniforms(N, Max, StrSize, Prog) when N < Max ->
     {_, _, Name} = gl:getActiveUniform(Prog, N, StrSize),
-    %%io:format("  ~s: ~p~n",[Name, wings_gl:uloc(Prog, Name)]),
     case wings_gl:uloc(Prog, Name) of
         -1 -> fetch_uniforms(N+1, Max, StrSize, Prog); %% Builtin
-        Loc -> [{list_to_atom(Name), Loc} | fetch_uniforms(N+1, Max, StrSize, Prog)]
+        Loc ->
+            {TruncName,_} = string:take(Name, "[", true),
+            [{list_to_atom(TruncName), Loc}
+             | fetch_uniforms(N+1, Max, StrSize, Prog)]
     end;
 fetch_uniforms(_N, _Max, _StrSize, _Prog) -> [].
 
