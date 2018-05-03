@@ -18,7 +18,7 @@
 	 update_image/4,used_images/1,
 	 used_materials/1,has_texture/2,
 	 apply_material/4,is_transparent/2,
-	 needed_attributes/2,
+	 needed_attributes/2, needs_vertex_colors/1,
          specular_to_metal/1, specular_from_metal/1
         ]).
 
@@ -428,7 +428,6 @@ apply_material(Name, Mtab, false, RS0) ->
             apply_material_1(Name, Mtab, false, RS1)
     end;
 apply_material(Name, Mtab, true, RS) ->
-    %% io:format("apply ~p~n",[Name]),
     apply_material_1(Name, Mtab, true, wings_shaders:clear_state(material,RS)).
 
 apply_material_1(Name, Mtab, ActiveVertexColors, RS0) when is_atom(Name) ->

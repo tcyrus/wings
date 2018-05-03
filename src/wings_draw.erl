@@ -54,7 +54,8 @@ invalidate_dlists(#st{selmode=Mode,sel=Sel}=St) ->
     prepare_dlists(St),
     case wings_dl:changed_materials(St) of
 	[] -> ok;
-	ChangedMat -> invalidate_by_mat(ChangedMat)
+	{ChangedMats,RequireVC} ->
+            invalidate_by_mat(ChangedMats, RequireVC)
     end,
     wings_dl:map(fun(D0, Data) ->
 			 D = update_mirror(D0),
@@ -116,26 +117,26 @@ prepare_fun_2(#dlo{proxy=IsUsed, proxy_data=Proxy,ns=Ns}=D, We, Wes) ->
 only_permissions_changed(#we{perm=P}, #we{perm=P}) -> false;
 only_permissions_changed(We0, We1) -> We0#we{perm=0} =:= We1#we{perm=0}.
     
-invalidate_by_mat(Changed0) ->
+invalidate_by_mat(Changed0, RequireVC) ->
     Changed = ordsets:from_list(Changed0),
-    wings_dl:map(fun(D, _) -> invalidate_by_mat(D, Changed) end, []).
+    wings_dl:map(fun(D, _) -> invalidate_by_mat(D, Changed, RequireVC) end, []).
 
-invalidate_by_mat(#dlo{work=none,vs=none,smooth=none,proxy=false}=D, _) ->
+invalidate_by_mat(#dlo{work=none,vs=none,smooth=none,proxy=false}=D, _, _) ->
     %% Nothing to do.
     D;
-invalidate_by_mat(#dlo{src_we=We,proxy_data=Pd}=D, Changed) ->
+invalidate_by_mat(#dlo{src_we=We,proxy_data=Pd}=D, Changed, RequireVC) ->
     Used = wings_facemat:used_materials(We),
     case ordsets:is_disjoint(Used, Changed) of
 	true ->
 	    %% The changed material is not used on any face in this object.
 	    D;
-	false ->
-	    %% The changed material is used by this object. We'll need to
-	    %% invalidate the vertex buffers as well as the display lists,
-	    %% because the vertex colors settings in the material may have
-	    %% been changed.
-	    D#dlo{work=none,edges=none,vs=none,smooth=none,vab=none,
-		  proxy_data=wings_proxy:invalidate(Pd, vab)}
+	false when RequireVC =:= false ->
+	    D#dlo{work=none,smooth=none, proxy_data=wings_proxy:invalidate(Pd, dl)};
+        false ->
+            case wings_draw_setup:has_active_color(D#dlo.vab) of
+                true -> D#dlo{work=none,smooth=none, proxy_data=wings_proxy:invalidate(Pd, dl)};
+                false -> D#dlo{work=none,smooth=none, vab=none, proxy_data=wings_proxy:invalidate(Pd, vab)}
+            end
     end.
 
 invalidate_sel(#dlo{src_we=#we{id=Id},src_sel=SrcSel}=D,

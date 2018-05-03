@@ -82,7 +82,7 @@ changed_materials(#st{mat=NewMat}) ->
 	#du{mat=NewMat} -> [];
 	#du{mat=OldMat}=Du ->
 	    put_dl_data(Du#du{mat=NewMat}),
-	    changed_materials_1(gb_trees:to_list(OldMat), NewMat, [])
+	    changed_materials_1(gb_trees:to_list(OldMat), NewMat, [], false)
     end.
 
 %% update(CallbackFun, Data0)
@@ -266,13 +266,15 @@ update_1(Fun, [], Data0, Seen0, Acc) ->
     end.
 
 
-changed_materials_1([{Name,Val}|T], New, Acc) ->
+changed_materials_1([{Name,Val}|T], New, Acc, RequireVC) ->
     case gb_trees:lookup(Name, New) of
-	none -> changed_materials_1(T, New, Acc);
-	{value,Val} -> changed_materials_1(T, New, Acc);
-	{value,_} -> changed_materials_1(T, New, [Name|Acc])
+	none -> changed_materials_1(T, New, Acc, RequireVC);
+	{value,Val} -> changed_materials_1(T, New, Acc, RequireVC);
+	{value,NewMat} ->
+            RVC = RequireVC orelse wings_material:needs_vertex_colors(NewMat),
+            changed_materials_1(T, New, [Name|Acc], RVC)
     end;
-changed_materials_1([], _, Acc) -> Acc.
+changed_materials_1([], _, Acc, RequireVC) -> {Acc, RequireVC}.
 
 
 map_1(Fun, [D0|Dlists], Data0, Seen0, Acc) ->
