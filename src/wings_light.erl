@@ -12,7 +12,7 @@
 %%
 
 -module(wings_light).
--export([init/0,
+-export([init/0, init_opengl/0,
          light_types/0,menu/3,command/2,is_any_light_selected/1,
 	 any_enabled_lights/0,info/1,setup_light/2,
 	 create/2,update_dynamic/2,update_matrix/2,update/1,
@@ -54,92 +54,30 @@ init() ->
     Path = filename:join(wings_util:lib_dir(wings), "textures"),
     LTCmatFile = "areal_ltcmat.bin",
     {ok, LTCmat} = file:read_file(filename:join(Path, LTCmatFile)),
-
-    64*64*4*4 = byte_size(LTCmat),
-    TxId = wings_image:new_hidden(area_mat,
-                                  #e3d_image{type=r32g32b32a32, bytes_pp=16,
-                                             width=64,height=64,
-                                             image=LTCmat
-                                            }),
-    gl:activeTexture(?GL_TEXTURE0 + ?AREA_LTC_MAT_UNIT),
-    gl:bindTexture(?GL_TEXTURE_2D, TxId),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_CLAMP_TO_EDGE),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
-    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGBA32F, 64, 64, 0, ?GL_RGBA, ?GL_FLOAT, LTCmat),
-    gl:activeTexture(?GL_TEXTURE0),
-    ?CHECK_ERROR(),
+    AreaMatTxId = load_area_light_tab(LTCmat),
+    CL = cl_setup(false),
+    DefEnvMap = "grandcanyon.png",
+    EnvImgRec = wings_image:image_read([{filename, filename:join(Path, DefEnvMap)}]),
+    EnvIds = make_envmap(CL, EnvImgRec),
+    [?SET(Tag, Id) || {Tag,Id} <- [AreaMatTxId|EnvIds]],
+    init_opengl(),
+    wings_develop:gl_error_check({?MODULE,?FUNCTION_NAME}),
     ok.
 
-light_types() ->
-    [{?__(1,"Infinite"),infinite,
-      ?__(2,"Create a far-away, directional light (like the sun)")},
-     {?__(3,"Point"),point,
-      ?__(4,"Create a light that radiates light in every direction")},
-     {?__(5,"Spot"),spot,
-      ?__(6,"Create a spotlight")},
-     {?__(7,"Ambient"),ambient,
-      ?__(8,"Create an ambient light source")},
-     {?__(9,"Area"),area,
-      ?__(10,"Create an area that radiates light")}].
-
-menu(X, Y, St) ->
-    SpotOnly = {iff,[spot]},
-    NotAmb = {iff,[spot,infinite,point,area]},
-    One = one_light,
-    Dir = wings_menu_util:directions(St#st{selmode=body}),
-    Menu0 = [{?__(2,"Move"),{move_light,Dir}},
-	     {NotAmb,separator},
-	     {NotAmb,{?__(3,"Position Highlight"),
-		      {'VALUE',{position_highlight,{'ASK',{[point],[]}}}},
-		      ?__(4,"Position the aim point or location of light")}},
-	     {NotAmb,{?__(5,"Color"),color,
-		      ?__(6,"Interactively adjust hue, value, and saturation")}},
-	     {NotAmb,
-	      {?__(7,"Attenuation"),
-	       {attenuation,
-		[{?__(8,"Linear"),linear,
-		  ?__(9,"Interactively adjust how much light weakens as it travels away from its source (linear factor)")},
-		 {?__(10,"Quadratic"),quadratic,
-		  ?__(11,"Interactively adjust how much light weakens as it travels away from its source (quadratic factor)")}]}}},
-	     {SpotOnly,separator},
-	     {SpotOnly,{?__(12,"Spot Angle"),spot_angle,
-			?__(13,"Interactivly adjust the angle of the spotlight cone")}},
-	     {SpotOnly,{?__(14,"Spot Falloff"),spot_falloff,
-			?__(15,"Interactivly adjust how much light weakens farther away from the center of the spotlight cone")}},
-	     {One,separator},
-	     {One,{?__(16,"Edit Properties..."),edit,
-		   ?__(17,"Edit light properties")}}|body_menu(Dir, St)],
-    Menu = filter_menu(Menu0, St),
-    wings_menu:popup_menu(X, Y, light, Menu).
-
-body_menu(Dir, #st{selmode=body}) ->
-    [separator,
-     {?STR(menu,18,"Duplicate"),{duplicate,Dir},
-      ?STR(menu,19,"Duplicate and move selected lights")},
-     {?STR(menu,20,"Delete"),delete,
-      ?STR(menu,21,"Delete seleced lights")}];
-body_menu(_, _) -> [].
-
-filter_menu(Menu, St) ->
-    MF = fun(_, #we{light=#light{type=Type}}) -> Type;
-            (_, #we{}) -> not_light
-         end,
-    RF = fun(Type, []) -> Type;
-            (Type, Type) -> Type;
-            (_, _) -> mixed
-         end,
-    T = wings_sel:dfold(MF, RF, [], St),
-    foldr(fun({one_light,_}, A) when T =:= mixed -> A;
-             ({one_light,Entry}, A) -> [Entry|A];
-             ({{iff,[_|_]=Types},Entry}, A) ->
-                  case member(T, Types) of
-                      true -> [Entry|A];
-                      false -> A
-                  end;
-             (Entry, A) -> [Entry|A]
-          end, [], Menu).
+init_opengl() ->
+    %% Bind textures to units
+    Ids = [{areamatrix_tex, ?AREA_LTC_MAT_UNIT},
+           {brdf_tex, ?ENV_BRDF_MAP_UNIT},
+           {env_diffuse_tex, ?ENV_DIFF_MAP_UNIT},
+           {env_spec_tex, ?ENV_SPEC_MAP_UNIT}],
+    SetupUnit = fun({Tag, Unit}) ->
+                        TxId = wings_image:txid(?GET(Tag)),
+                        gl:activeTexture(?GL_TEXTURE0 + Unit),
+                        gl:bindTexture(?GL_TEXTURE_2D, TxId),
+                        gl:activeTexture(?GL_TEXTURE0)
+                end,
+    _ = [SetupUnit(Id) || Id <- Ids],
+    ok.
 
 command({move_light,Type}, St) ->
     wings_move:setup(Type, St);
@@ -949,3 +887,207 @@ mul_point(none, Pos) -> Pos;
 mul_point({1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0, Tx,Ty,Tz}, {X,Y,Z}) ->
     {X+Tx,Y+Ty,Z+Tz};
 mul_point(M, P) -> e3d_mat:mul_point(M, P).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+load_area_light_tab(LTCmat) ->
+    64*64*4*4 = byte_size(LTCmat),
+    io:format("LTCA: ~p ~p ~n",[byte_size(LTCmat), erlang:md5(LTCmat)]),
+    Opts = [{wrap, {clamp,clamp}}, {filter, {linear, linear}}],
+    ImId = wings_image:new_hidden(area_mat,
+                                  #e3d_image{type=r32g32b32a32, bytes_pp=16,
+                                             width=64,height=64,
+                                             image=LTCmat,
+                                             opts=Opts
+                                            }),
+    ?CHECK_ERROR(),
+    {areamatrix_tex, ImId}.
+
+make_envmap(CL, EnvImgRec0) ->
+    EnvImgRec = e3d_image:convert(EnvImgRec0, r8g8b8a8, 1, lower_left),
+    W = 512, H = 256,  %% Sizes for result images
+    OrigImg = wings_cl:image(EnvImgRec, CL),
+    Buff0   = wings_cl:buff(W*512*4*4, [read_write], CL),
+    Buff1   = wings_cl:buff(W*512*4*4, [read_write], CL),
+    DiffId = make_diffuse(OrigImg, Buff0, Buff1, W, H, CL),
+    SpecId = make_spec(OrigImg, Buff0, Buff1, W, H, CL),
+    BrdfId = make_brdf(Buff0, 512, 512, CL),
+    cl:release_mem_object(OrigImg),
+    cl:release_mem_object(Buff0),
+    cl:release_mem_object(Buff1),
+    [DiffId,SpecId,BrdfId].
+
+make_brdf(Buff, W, H, CL) ->
+    Fill = wings_cl:fill(Buff, <<0:(32*2)>>, W*H*4*2, CL),
+    CC   = wings_cl:cast(schlick_brdf, [Buff, W, H], [W,H], [Fill], CL),
+    Read = wings_cl:read(Buff, W*H*4*2, [CC], CL),
+    {ok, BrdfData} = cl:wait(Read),
+    Img = << << (round(X*255)), (round(Y*255)), 0 >>
+             || <<X:32/float-native, Y:32/float-native>> <= BrdfData >>,
+    %% wings_image:debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="BRDF"}),
+    Opts = [{wrap, {clamp,clamp}}, {filter, {linear, linear}}],
+    ImId = wings_image:new_hidden(brdf_tex, #e3d_image{width=W,height=H,image=Img,opts=Opts}),
+    {brdf_tex, ImId}.
+
+make_diffuse(OrigImg, Buff0, Buff1, W, H, CL) ->
+    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
+    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
+    {B0,B1,Pre} = cl_multipass(make_diffuse, [OrigImg, W, H], Buff0, Buff1, 0, 10,
+                               [W,H], [Fill0, Fill1], CL),
+    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
+    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
+    {ok, DiffData} = cl:wait(Read),
+    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
+              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= DiffData >>,
+    %% wings_image:debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="Diffuse"}),
+    Opts = [{wrap, {repeat,clamp}}, {filter, {linear, linear}}],
+    ImId = wings_image:new_hidden(env_diffuse_tex, #e3d_image{width=W,height=H,image=Img,opts=Opts}),
+    {env_diffuse_tex, ImId}.
+
+make_spec(OrigImg, Buff0, Buff1, W0, H0, CL) ->
+    NoMipMaps = trunc(math:log2(min(W0,H0))),
+    MipMaps = make_spec(0, NoMipMaps, OrigImg, Buff0, Buff1, W0, H0, CL),
+    [{ImgOrig,W0,H0,0}|_] = MipMaps, %% Dummy
+    Opts = [{wrap, {repeat,clamp}}, {filter, {linear, linear}}],
+    ImId = wings_image:new_hidden(env_spec_tex, #e3d_image{width=W0,height=H0,image=ImgOrig,opts=Opts}),
+    TxId = wings_image:txid(ImId),
+    gl:activeTexture(?GL_TEXTURE0 + ?ENV_SPEC_MAP_UNIT),
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAX_LEVEL, NoMipMaps-1),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR_MIPMAP_LINEAR),
+    [gl:texImage2D(?GL_TEXTURE_2D, Level, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img) ||
+        {Img,W,H,Level} <- MipMaps],
+    gl:activeTexture(?GL_TEXTURE0),
+    {env_spec_tex, ImId}.
+
+make_spec(Level, Max, OrigImg, Buff0, Buff1, W, H, CL) when Level =< Max ->
+    Step = Level/Max,
+    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
+    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
+    {B0,B1,Pre}  = cl_multipass(make_specular, [OrigImg, W, H, Step],
+                                Buff0, Buff1, 0, 10, [W,H], [Fill0, Fill1], CL),
+    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
+    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
+    {ok, SpecData} = cl:wait(Read),
+    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
+              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= SpecData >>,
+    %% io:format("~p: ~p ~p  ~.3f~n", [Level, W, H, Step]),
+    %% Level < 3 andalso
+    %%     wings_image:debug_display(1000-Level, #e3d_image{width=W, height=H, image=Img,
+    %%                                          name="Spec: " ++ integer_to_list(Level)}),
+    [{Img,W,H,Level} | make_spec(Level+1, Max, OrigImg, Buff0, Buff1, W div 2, H div 2, CL)];
+make_spec(_Level, _Max, _OrigImg, _B0, _B1, _W, _H, _CL) ->
+    [].
+
+cl_multipass(Kernel, Args, Buff0, Buff1, N, Tot, No, Wait, CL) when N < Tot ->
+    Next = wings_cl:cast(Kernel, Args ++ [Buff0, Buff1, N, Tot], No, Wait, CL),
+    cl_multipass(Kernel, Args, Buff1, Buff0, N+1, Tot, No, [Next], CL);
+cl_multipass(_Kernel, _Args, Buff0, Buff1, _N, _Tot, _No, Wait, _CL) ->
+    {Buff0, Buff1, Wait}.
+
+cl_setup(Recompile) ->
+    case get({?MODULE, cl}) of
+	undefined ->
+            case wings_cl:is_available() of
+                true ->
+                    try cl_setup_1()
+                    catch _:Reason ->
+                            io:format("CL setup error: ~p ~p~n",
+                                      [Reason, erlang:get_stacktrace()]),
+                            {error, no_openCL}
+                    end;
+                false -> {error, no_openCL}
+            end;
+	CL0 when Recompile ->
+            try
+                wings_cl:compile("img_lib.cl", CL0)
+            catch _:Reason ->
+                    io:format("CL compile error: ~p ~p~n",
+                              [Reason, erlang:get_stacktrace()]),
+                    CL0
+            end;
+        CL ->
+            CL
+    end.
+
+cl_setup_1() ->
+    CL0 = wings_cl:setup(),
+    case wings_cl:have_image_support(CL0) of
+        true  ->
+            CL = wings_cl:compile("img_lib.cl", CL0),
+            put({?MODULE, cl}, CL),
+            CL;
+        false ->
+            {error, no_openCL_image}
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+light_types() ->
+    [{?__(1,"Infinite"),infinite,
+      ?__(2,"Create a far-away, directional light (like the sun)")},
+     {?__(3,"Point"),point,
+      ?__(4,"Create a light that radiates light in every direction")},
+     {?__(5,"Spot"),spot,
+      ?__(6,"Create a spotlight")},
+     {?__(7,"Ambient"),ambient,
+      ?__(8,"Create an ambient light source")},
+     {?__(9,"Area"),area,
+      ?__(10,"Create an area that radiates light")}].
+
+menu(X, Y, St) ->
+    SpotOnly = {iff,[spot]},
+    NotAmb = {iff,[spot,infinite,point,area]},
+    One = one_light,
+    Dir = wings_menu_util:directions(St#st{selmode=body}),
+    Menu0 = [{?__(2,"Move"),{move_light,Dir}},
+	     {NotAmb,separator},
+	     {NotAmb,{?__(3,"Position Highlight"),
+		      {'VALUE',{position_highlight,{'ASK',{[point],[]}}}},
+		      ?__(4,"Position the aim point or location of light")}},
+	     {NotAmb,{?__(5,"Color"),color,
+		      ?__(6,"Interactively adjust hue, value, and saturation")}},
+	     {NotAmb,
+	      {?__(7,"Attenuation"),
+	       {attenuation,
+		[{?__(8,"Linear"),linear,
+		  ?__(9,"Interactively adjust how much light weakens as it travels away from its source (linear factor)")},
+		 {?__(10,"Quadratic"),quadratic,
+		  ?__(11,"Interactively adjust how much light weakens as it travels away from its source (quadratic factor)")}]}}},
+	     {SpotOnly,separator},
+	     {SpotOnly,{?__(12,"Spot Angle"),spot_angle,
+			?__(13,"Interactivly adjust the angle of the spotlight cone")}},
+	     {SpotOnly,{?__(14,"Spot Falloff"),spot_falloff,
+			?__(15,"Interactivly adjust how much light weakens farther away from the center of the spotlight cone")}},
+	     {One,separator},
+	     {One,{?__(16,"Edit Properties..."),edit,
+		   ?__(17,"Edit light properties")}}|body_menu(Dir, St)],
+    Menu = filter_menu(Menu0, St),
+    wings_menu:popup_menu(X, Y, light, Menu).
+
+body_menu(Dir, #st{selmode=body}) ->
+    [separator,
+     {?STR(menu,18,"Duplicate"),{duplicate,Dir},
+      ?STR(menu,19,"Duplicate and move selected lights")},
+     {?STR(menu,20,"Delete"),delete,
+      ?STR(menu,21,"Delete seleced lights")}];
+body_menu(_, _) -> [].
+
+filter_menu(Menu, St) ->
+    MF = fun(_, #we{light=#light{type=Type}}) -> Type;
+            (_, #we{}) -> not_light
+         end,
+    RF = fun(Type, []) -> Type;
+            (Type, Type) -> Type;
+            (_, _) -> mixed
+         end,
+    T = wings_sel:dfold(MF, RF, [], St),
+    foldr(fun({one_light,_}, A) when T =:= mixed -> A;
+             ({one_light,Entry}, A) -> [Entry|A];
+             ({{iff,[_|_]=Types},Entry}, A) ->
+                  case member(T, Types) of
+                      true -> [Entry|A];
+                      false -> A
+                  end;
+             (Entry, A) -> [Entry|A]
+          end, [], Menu).

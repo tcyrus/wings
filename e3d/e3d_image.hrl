@@ -22,6 +22,7 @@
 	 height = 0,         %% in pixels
 	 image,              %% binary
 	 filename=none,	     %% Filename or none
-	 name=[]	     %% Name of image
+	 name=[],	     %% Name of image
+         opts=[]             %% filter: {Min:[mipmap|linear|nearest],Max} wrap:{S:repeat|clamp,T}
 	}).
 

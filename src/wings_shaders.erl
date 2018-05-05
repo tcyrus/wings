@@ -23,8 +23,6 @@ init() ->
     wings_pref:set_default(hl_lightpos, {3000.0, 10000.0, 1000.0}),
     wings_pref:set_default(hl_skycol, {0.95,0.95,0.90}),
     wings_pref:set_default(hl_groundcol, {0.026,0.024,0.021}),
-    wings_image:load_envmap("grandcanyon.png"),
-    %% wings_image:load_envmap("hdrvfx_zanla_1_n1_v01_Bg.jpg"),
     compile_all().
 
 compile_all() ->
@@ -38,8 +36,7 @@ compile_all() ->
                  {point_light, point_light, [], ""},
                  {spot_light, spot_light, [], ""},
                  {area_light, area_light, [], ""},
-                 {light_light, light_light, [], ""},
-                 {no_light, no_light, [], ""}
+                 {light_light, light_light, [], ""}
                 ],
     Make = fun({Id, Name, Uniforms, Desc}, Acc) ->
                    case make_prog(Name, Uniforms, Desc) of
@@ -49,8 +46,6 @@ compile_all() ->
            end,
     Programs = lists:foldl(Make, [], Programs0),
     ?CHECK_ERROR(),
-    %% io:format("Using GPU shaders.\n"),
-    %% io:format(" :~p\n",[Programs]),
     gl:useProgram(0),
     ?SET(light_shaders, maps:from_list(Programs)),
     ok.

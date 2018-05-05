@@ -256,6 +256,7 @@ init_opengl(St) ->
     wings_render:init(),
     wings_dl:init(),
     wings_draw:refresh_dlists(St),
+    wings_light:init_opengl(),
     keep.
 
 redraw(St) ->

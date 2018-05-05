@@ -17,7 +17,6 @@
 	 screenshot/2,screenshot/1,viewport_screenshot/1,
 	 bumpid/1,
 	 is_normalmap/1,
-         load_envmap/1, load_envmap/2,
 	 next_id/0,delete_older/1,delete_from/1,delete/1,
 	 update/2,update_filename/2,find_image/2,
 	 window/1, debug_display/2]).
@@ -90,6 +89,10 @@ new_temp(Name, E3DImage) ->
 new_hidden(Name, E3DImage) ->
     req({new,E3DImage#e3d_image{name=Name},true, true}).
 
+debug_display(Id, Img) ->
+    Display = fun(_) -> wings_image_viewer:new({image, Id}, Img), keep end,
+    wings ! {external, Display}.
+
 create(St) ->
     create_image(),
     St.
@@ -132,14 +135,6 @@ update_filename(Id, Filename) ->
 
 find_image(Dir, Filename) ->
     req({find_image,Dir,Filename}, false).
-
-load_envmap(File) ->
-    load_envmap(File, false).
-load_envmap(File, Recompile) ->
-    Path = filename:join(wings_util:lib_dir(wings), "textures"),
-    FileName = filename:join(Path, File),
-    EnvImgRec = image_read([{filename, FileName}]),
-    req({load_envmap, EnvImgRec, Recompile}, false).
 
 req(Req) ->
     req(Req, true).
@@ -294,11 +289,6 @@ handle_call({find_image, Dir, File}, _From, #ist{images=Ims}=S) ->
         [] -> {reply, false, S};
         [Id|_] -> {reply, {true, Id}, S}
     end;
-handle_call({load_envmap, Img, Recompile}, _From, #ist{} = S) ->
-    case cl_setup(Recompile) of
-        {error, _R} = Err -> {reply, Err, S};
-        CL -> {reply, make_envmap(CL, Img), S}
-    end;
 handle_call(Req, _From, S) ->
     io:format("~w: Bad request: ~w~n", [?MODULE, Req]),
     {reply, error, S}.
@@ -312,6 +302,61 @@ handle_cast({update_filename,Id,NewName}, #ist{images=Images0}=S) ->
 
 %%%%%%%%%%%%%%%%% Internal Functions %%%%%%%%%%%%%%%
 
+make_texture(Id, Image) ->
+    case init_texture_0(Image) of
+	{error,_}=Error ->
+	    Error;
+	TxId ->
+	    put(Id, TxId),
+	    TxId
+    end.
+
+init_texture_0(Image) ->
+    case get(wings_not_running) of
+        true -> 0;
+        _ ->
+            [TxId] = gl:genTextures(1),
+            case init_texture_1(image_rec(Image), TxId) of
+                {error,_}=Error ->
+                    wings_gl:deleteTextures([TxId]),
+                    Error;
+                Other ->
+                    Other
+            end
+    end.
+
+init_texture_1(Image0, TxId) ->
+    case maybe_scale(Image0) of
+        {error,_}=Error ->
+            Error;
+        Image ->
+            init_texture_2(Image, TxId)
+    end.
+
+init_texture_2(#e3d_image{width=W,height=H,image=Bits,opts=Opts}=Image, TxId) ->
+    gl:bindTexture(?GL_TEXTURE_2D, TxId),
+    FT = {Format,Type} = texture_format(Image),
+    Ft = case wings_pref:get_value(filter_texture, false) of
+             true -> linear;
+             false -> nearest
+         end,
+    {MinFilter,MagFilter} = proplists:get_value(filter, Opts, {mipmap, Ft}),
+    {WrapS,WrapT} = proplists:get_value(wrap, Opts, {repeat, repeat}),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, wrap(WrapS)),
+    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, wrap(WrapT)),
+    case MinFilter of
+        mipmap ->
+            gl:texParameteri(?GL_TEXTURE_2D, ?GL_GENERATE_MIPMAP, ?GL_TRUE),
+            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR_MIPMAP_LINEAR),
+            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, filter(MagFilter));
+        _ ->
+            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, filter(MagFilter)),
+            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, filter(MinFilter))
+    end,
+    gl:texImage2D(?GL_TEXTURE_2D, 0, internal_format(FT), W, H, 0, Format, Type, Bits),
+    gl:bindTexture(?GL_TEXTURE_2D, 0),
+    ?CHECK_ERROR(),
+    TxId.
 
 create_bump(Id, BumpId, #ist{images=Images0}) ->
     delete_bump(Id),  %% update case..
@@ -362,80 +407,6 @@ update_mipmaps(TxId, MipMaps) ->
 				 ?GL_RGB, ?GL_UNSIGNED_BYTE, Bin)
 	   end,
     [Load(MM) || MM <- MipMaps].
-
-
-maybe_convert(#e3d_image{type=Type0,order=Order}=Im) ->
-    case {img_type(Type0),Order} of
-	{Type0,lower_left} -> Im;
-	{Type,_} -> e3d_image:convert(Im, Type, 1, lower_left)
-    end.
-
-img_type(b8g8r8) -> r8g8b8;
-img_type(b8g8r8a8) -> r8g8b8a8;
-img_type(Type) -> Type.
-
-make_texture(Id, Image) ->
-    case init_texture(Image) of
-	{error,_}=Error ->
-	    Error;
-	TxId ->
-	    put(Id, TxId),
-	    TxId
-    end.
-
-init_texture(Image) ->
-    case get(wings_not_running) of
-        true -> 0;
-        _ ->
-            [TxId] = gl:genTextures(1),
-            case init_texture(image_rec(Image), TxId) of
-                {error,_}=Error ->
-                    wings_gl:deleteTextures([TxId]),
-                    Error;
-                Other ->
-                    Other
-            end
-    end.
-
-init_texture(Image0, TxId) ->
-    case maybe_scale(Image0) of
-        {error,_}=Error ->
-            Error;
-        Image ->
-            #e3d_image{width=W,height=H,image=Bits} = Image,
-            gl:pushAttrib(?GL_TEXTURE_BIT),
-            gl:enable(?GL_TEXTURE_2D),
-            gl:bindTexture(?GL_TEXTURE_2D, TxId),
-            FT = {Format,Type} = texture_format(Image),
-            Ft = case wings_pref:get_value(filter_texture, false) of
-                     true -> ?GL_LINEAR;
-                     false -> ?GL_NEAREST
-                 end,
-            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
-            gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_REPEAT),
-            if Type =:= ?GL_UNSIGNED_BYTE ->
-		    gl:texParameteri(?GL_TEXTURE_2D, ?GL_GENERATE_MIPMAP, ?GL_TRUE),
-		    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER,
-				     ?GL_LINEAR_MIPMAP_LINEAR),
-                    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, Ft);
-               Type =:= ?GL_FLOAT ->
-                    io:format("Sz: ~p Int #~.16B ~p:~p F#~.16B T:#~.16B~n",
-                              [byte_size(Bits), internal_format(FT), W,H, Format, Type]),
-                    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_CLAMP_TO_EDGE),
-                    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
-                    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_NEAREST),
-		    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_NEAREST);
-               true ->
-                    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, Ft),
-		    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, Ft)
-            end,
-            %%gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGBA32F, 64, 64, 0, ?GL_RGBA, ?GL_FLOAT, Bits),
-            gl:texImage2D(?GL_TEXTURE_2D, 0, internal_format(FT),
-	        	  W, H, 0, Format, Type, Bits),
-            ?CHECK_ERROR(),
-            gl:popAttrib(),
-            TxId
-    end.
 
 maybe_scale(#e3d_image{width=W0,height=H0}=Image) ->
 %%  case wings_gl:is_ext({2,0}, 'GL_ARB_texture_non_power_of_two') of
@@ -495,6 +466,16 @@ need_resize_image(W, H, Max) when W > Max; H > Max ->
 need_resize_image(_, _, _) ->
     false.
 
+maybe_convert(#e3d_image{type=Type0,order=Order}=Im) ->
+    case {img_type(Type0),Order} of
+	{Type0,lower_left} -> Im;
+	{Type,_} -> e3d_image:convert(Im, Type, 1, lower_left)
+    end.
+
+img_type(b8g8r8) -> r8g8b8;
+img_type(b8g8r8a8) -> r8g8b8a8;
+img_type(Type) -> Type.
+
 nearest_power_two(N) when (N band -N) =:= N -> N;
 nearest_power_two(N) -> nearest_power_two(N, 1).
 
@@ -518,12 +499,23 @@ internal_format({?GL_RGBA,?GL_FLOAT}) -> ?GL_RGBA32F;
 internal_format({?GL_RGB,?GL_FLOAT}) -> ?GL_RGB32F;
 internal_format({Format,?GL_UNSIGNED_BYTE}) -> Format.
 
+filter(mipmap) -> ?GL_LINEAR_MIPMAP_LINEAR;
+filter(linear) -> ?GL_LINEAR;
+filter(nearest) -> ?GL_NEAREST.
+
+wrap(repeat) -> ?GL_REPEAT;
+wrap(clamp) -> ?GL_CLAMP_TO_EDGE.
+
+delete_older_1([{_,{hidden,_}}=Im|T], Limit) ->
+    [Im|delete_older_1(T, Limit)];
 delete_older_1([{Id,_}|T], Limit) when Id < Limit ->
     delete_bump(Id),
     wings_gl:deleteTextures([erase(Id)]),
     delete_older_1(T, Limit);
 delete_older_1(Images, _) -> Images.
 
+delete_from_1([{_,{hidden,_}}=Im|T], Limit, Acc) ->
+    delete_from_1(T, Limit, [Im|Acc]);
 delete_from_1([{Id,_}=Im|T], Limit, Acc) when Id < Limit ->
     delete_from_1(T, Limit, [Im|Acc]);
 delete_from_1([{Id,_}|T], Limit, Acc) ->
@@ -557,7 +549,7 @@ do_update(Id, In = #e3d_image{width=W,height=H,type=Type,name=NewName},
 	    gl:bindTexture(?GL_TEXTURE_2D, TxId),
 	    gl:texSubImage2D(?GL_TEXTURE_2D, 0, 0, 0, W, H, Format, Type, Im#e3d_image.image);
 	_ ->
-	    init_texture(Im, TxId)
+	    init_texture_1(Im, TxId)
     end,
     case get({Id,bump}) of
 	undefined ->
@@ -711,141 +703,6 @@ pattern_repeat(N, D) ->
 truncate(B0, Sz) ->
     <<B:Sz/binary,_/binary>> = list_to_binary(B0),
     B.
-
-make_envmap(CL, EnvImgRec0) ->
-    EnvImgRec = e3d_image:convert(maybe_convert(EnvImgRec0),r8g8b8a8),
-    W = 512, H = 256,  %% Sizes for result images
-    [BrdfId, DiffId, SpecId] = gl:genTextures(3),
-    OrigImg = wings_cl:image(EnvImgRec, CL),
-    Buff0   = wings_cl:buff(W*512*4*4, [read_write], CL),
-    Buff1   = wings_cl:buff(W*512*4*4, [read_write], CL),
-    make_diffuse(OrigImg, Buff0, Buff1, W, H, DiffId, CL),
-    make_spec(OrigImg, Buff0, Buff1, W, H, SpecId, CL),
-    make_brdf(Buff0, 512, 512, BrdfId, CL),
-    cl:release_mem_object(OrigImg),
-    cl:release_mem_object(Buff0),
-    cl:release_mem_object(Buff1),
-    ok.
-
-make_brdf(Buff, W, H, TxId, CL) ->
-    Fill = wings_cl:fill(Buff, <<0:(32*2)>>, W*H*4*2, CL),
-    CC   = wings_cl:cast(schlick_brdf, [Buff, W, H], [W,H], [Fill], CL),
-    Read = wings_cl:read(Buff, W*H*4*2, [CC], CL),
-    {ok, BrdfData} = cl:wait(Read),
-    Img = << << (round(X*255)), (round(Y*255)), 0 >>
-             || <<X:32/float-native, Y:32/float-native>> <= BrdfData >>,
-    %% debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="BRDF"}),
-
-    gl:activeTexture(?GL_TEXTURE0 + ?ENV_BRDF_MAP_UNIT),
-    gl:bindTexture(?GL_TEXTURE_2D, TxId),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_CLAMP_TO_EDGE),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
-    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img),
-    gl:activeTexture(?GL_TEXTURE0).
-
-make_diffuse(OrigImg, Buff0, Buff1, W, H, TxId, CL) ->
-    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
-    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
-    {B0,B1,Pre} = cl_multipass(make_diffuse, [OrigImg, W, H], Buff0, Buff1, 0, 10,
-                               [W,H], [Fill0, Fill1], CL),
-    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
-    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
-    {ok, DiffData} = cl:wait(Read),
-    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
-              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= DiffData >>,
-    %% debug_display(1000+TxId,#e3d_image{width=W, height=H, image=Img, name="Diffuse"}),
-
-    gl:activeTexture(?GL_TEXTURE0 + ?ENV_DIFF_MAP_UNIT),
-    gl:bindTexture(?GL_TEXTURE_2D, TxId),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_CLAMP_TO_EDGE),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR),
-    gl:texImage2D(?GL_TEXTURE_2D, 0, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img),
-    gl:activeTexture(?GL_TEXTURE0).
-
-make_spec(OrigImg, Buff0, Buff1, W0, H0, TxId, CL) ->
-    NoMipMaps = trunc(math:log2(min(W0,H0))),
-    MipMaps = make_spec(0, NoMipMaps, OrigImg, Buff0, Buff1, W0, H0, CL),
-    gl:activeTexture(?GL_TEXTURE0 + ?ENV_SPEC_MAP_UNIT),
-    gl:bindTexture(?GL_TEXTURE_2D, TxId),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_S, ?GL_REPEAT),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_WRAP_T, ?GL_REPEAT),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAG_FILTER, ?GL_LINEAR),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MAX_LEVEL, NoMipMaps-1),
-    gl:texParameteri(?GL_TEXTURE_2D, ?GL_TEXTURE_MIN_FILTER, ?GL_LINEAR_MIPMAP_LINEAR),
-    [gl:texImage2D(?GL_TEXTURE_2D, Level, ?GL_RGB, W, H, 0, ?GL_RGB, ?GL_UNSIGNED_BYTE, Img) ||
-        {Img,W,H,Level} <- MipMaps],
-    gl:activeTexture(?GL_TEXTURE0).
-
-make_spec(Level, Max, OrigImg, Buff0, Buff1, W, H, CL) when Level =< Max ->
-    Step = Level/Max,
-    Fill0 = wings_cl:fill(Buff0, <<0:(32*4)>>, W*H*4*4, CL),
-    Fill1 = wings_cl:fill(Buff1, <<0:(32*4)>>, W*H*4*4, CL),
-    {B0,B1,Pre}  = cl_multipass(make_specular, [OrigImg, W, H, Step],
-                                Buff0, Buff1, 0, 10, [W,H], [Fill0, Fill1], CL),
-    CC   = wings_cl:cast(color_convert, [B0,B1,W,H], [W,H], Pre, CL),
-    Read = wings_cl:read(B1, W*H*4*4, [CC], CL),
-    {ok, SpecData} = cl:wait(Read),
-    Img = << << (round(R*255)), (round(G*255)), (round(B*255)) >> ||
-              <<R:32/float-native, G:32/float-native, B:32/float-native, _:32>> <= SpecData >>,
-    %% io:format("~p: ~p ~p  ~.3f~n", [Level, W, H, Step]),
-    %% Level < 3 andalso
-    %%     debug_display(1000-Level, #e3d_image{width=W, height=H, image=Img,
-    %%                                          name="Spec: " ++ integer_to_list(Level)}),
-    [{Img,W,H,Level} | make_spec(Level+1, Max, OrigImg, Buff0, Buff1, W div 2, H div 2, CL)];
-make_spec(_Level, _Max, _OrigImg, _B0, _B1, _W, _H, _CL) ->
-    [].
-
-cl_multipass(Kernel, Args, Buff0, Buff1, N, Tot, No, Wait, CL) when N < Tot ->
-    Next = wings_cl:cast(Kernel, Args ++ [Buff0, Buff1, N, Tot], No, Wait, CL),
-    cl_multipass(Kernel, Args, Buff1, Buff0, N+1, Tot, No, [Next], CL);
-cl_multipass(_Kernel, _Args, Buff0, Buff1, _N, _Tot, _No, Wait, _CL) ->
-    {Buff0, Buff1, Wait}.
-
-debug_display(Id, Img) ->
-    Display = fun(_) -> wings_image_viewer:new({image, Id}, Img), keep end,
-    wings ! {external, Display}.
-
-cl_setup(Recompile) ->
-    case get({?MODULE, cl}) of
-	undefined ->
-            case wings_cl:is_available() of
-                true ->
-                    try cl_setup_1()
-                    catch _:Reason ->
-                            io:format("CL setup error: ~p ~p~n",
-                                      [Reason, erlang:get_stacktrace()]),
-                            {error, no_openCL}
-                    end;
-                false -> {error, no_openCL}
-            end;
-	CL0 when Recompile ->
-            try
-                wings_cl:compile("img_lib.cl", CL0)
-            catch _:Reason ->
-                    io:format("CL compile error: ~p ~p~n",
-                              [Reason, erlang:get_stacktrace()]),
-                    CL0
-            end;
-        CL ->
-            CL
-    end.
-
-cl_setup_1() ->
-    CL0 = wings_cl:setup(),
-    case wings_cl:have_image_support(CL0) of
-        true  ->
-            CL = wings_cl:compile("img_lib.cl", CL0),
-            put({?MODULE, cl}, CL),
-            CL;
-        false ->
-            {error, no_openCL_image}
-    end.
-
-
 
 %% Run a computation in a worker process with a generous heap size
 %% and the default generational garbage collector. Before R12B,
